@@ -11,6 +11,7 @@ export function useRelayWorker(
 ) {
   const workerRef = useRef<Worker>();
   const handlerRef = useRef(handlers);
+  const initialRelaysRef = useRef(relays);
 
   useEffect(() => {
     handlerRef.current = handlers;
@@ -51,7 +52,7 @@ export function useRelayWorker(
     };
 
     worker.addEventListener("message", listener);
-    worker.postMessage({ type: "init", relays });
+    worker.postMessage({ type: "init", relays: initialRelaysRef.current });
 
     return () => {
       worker.removeEventListener("message", listener);

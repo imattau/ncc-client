@@ -1,8 +1,7 @@
 import {
   ChangeEvent,
   FormEvent,
-  KeyboardEvent,
-  SyntheticEvent,
+  KeyboardEvent as ReactKeyboardEvent,
   memo,
   useCallback,
   useEffect,
@@ -52,14 +51,6 @@ const canonicalizePubkey = (value?: string | null) => {
     return value.toLowerCase();
   }
   return null;
-};
-
-const describeMediaError = (error: MediaError | null | undefined) => {
-  if (!error) return "Unknown media error";
-  if (error.message) {
-    return `${error.message} (code ${error.code ?? "unknown"})`;
-  }
-  return `Media error code ${error.code ?? "unknown"}`;
 };
 
 const FOLLOWING_AUTHORS = ["@alice", "@nate", "@lena"];
@@ -160,7 +151,7 @@ const buildFollowingBaseFilters = (
     kinds: [0, 1, 30023],
     since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
     limit: 200
-  };
+  });
   return filters;
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
@@ -172,7 +163,6 @@ const failedAvatarCache = new Set<string>();
 const CACHE_BATCH_SIZE = 80;
 const PREFETCH_CACHE_LIMIT = 3;
 const PREFETCH_THRESHOLD = 200;
-const FEED_INCREMENT = 20;
 
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
   serviceRecord: "serviceRecords",
@@ -251,6 +241,7 @@ const App = () => {
   const [managedRelays, setManagedRelays] = useState<string[]>(() => relayManager.getRelays());
   const [includeReactions, setIncludeReactions] = useState(true);
   const [includeServiceRecords, setIncludeServiceRecords] = useState(true);
+  const managedRelaysRef = useRef(managedRelays);
   const [localCacheLimit, setLocalCacheLimit] = useState(LOCAL_STORAGE_CACHE_DEFAULT);
   const [indexedDbCacheLimit, setIndexedDbCacheLimit] = useState(INDEXED_DB_CACHE_DEFAULT);
   const [isLoadingMoreCache, setIsLoadingMoreCache] = useState(false);
@@ -305,7 +296,7 @@ const App = () => {
   const signerRef = useRef<BunkerSigner | null>(null);
   const [activeHashtag, setActiveHashtag] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
-  const [userFollowing, setUserFollowing] = useState<string[]>(() => userManager.getFollowingList());
+  const [, setUserFollowing] = useState<string[]>(() => userManager.getFollowingList());
   const [userFollowers, setUserFollowers] = useState<string[]>(() => userManager.getFollowersList());
   const [isRelayModalOpen, setIsRelayModalOpen] = useState(false);
   const relayModalRef = useRef<HTMLDivElement>(null);
@@ -316,20 +307,6 @@ const App = () => {
   const searchManagerRef = useRef<SearchManager>();
   const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
-  const MEDIA_BLOCK_KEY = "ncc-blocked-media-hosts";
-  const [blockedMediaHosts, setBlockedMediaHosts] = useState<Set<string>>(() => {
-    if (typeof window === "undefined") return new Set();
-    try {
-      const stored = window.localStorage.getItem(MEDIA_BLOCK_KEY);
-      if (!stored) return new Set();
-      const parsed = JSON.parse(stored);
-      if (!Array.isArray(parsed)) return new Set();
-      return new Set(parsed.filter((item) => typeof item === "string"));
-    } catch {
-      return new Set();
-    }
-  });
-  const blockedMediaHostsRef = useRef<Set<string>>(blockedMediaHosts);
   const [activeFilters, setActiveFilters] = useState<TimelineFilterId[]>([]);
   const [focusedEventId, setFocusedEventId] = useState<string | null>(null);
   const focusedEvent = focusedEventId ? eventsById.get(focusedEventId) ?? null : null;
@@ -342,6 +319,9 @@ const App = () => {
     hashtags: new Set<string>(),
     keywords: new Set<string>()
   });
+  useEffect(() => {
+    managedRelaysRef.current = managedRelays;
+  }, [managedRelays]);
   const fetchedProfilesRef = useRef<Set<string>>(new Set());
   const processedKind0Ref = useRef<Set<string>>(new Set());
   const cacheFlushTimeoutRef = useRef<number | null>(null);
@@ -537,7 +517,7 @@ const App = () => {
     }
     isLoadingCacheRef.current = false;
     setIsLoadingMoreCache(false);
-  }, [indexedDbCacheLimit, setGlobalLimit]);
+  }, [indexedDbCacheLimit, setGlobalLimit, schedulePrefetchCacheRow]);
 
   useEffect(() => {
     cacheLoadedRef.current = 0;
@@ -755,11 +735,6 @@ const App = () => {
     }));
   }, []);
 
-  const describeMediaError = (error: MediaError | null | undefined) => {
-    if (!error) return "Unknown media error";
-    return error.message ? `${error.message} (code ${error.code})` : `Media error code ${error.code}`;
-  };
-
   const handleMediaError = useCallback(
     (url: string, mediaType: "video" | "audio" | "playlist", error?: string) => {
       appErrorManager.report({
@@ -890,7 +865,7 @@ const App = () => {
     } catch (err) {
       console.error("Reply failed", err);
     }
-  }, [authSession, eventsById]);
+  }, [authSession, eventsById, handleWorkerEvent]);
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -1201,10 +1176,7 @@ const App = () => {
     setSleepingRelays(relayStatus?.sleepingRelays ?? []);
   }, [relayStatus?.sleepingRelays]);
 
-  const followingAuthors = useMemo(
-    () => userManager.getEffectiveFollowing(authSession?.pubkey ?? undefined),
-    [authSession?.pubkey, userFollowing, userManager]
-  );
+  const followingAuthors = userManager.getEffectiveFollowing(authSession?.pubkey ?? undefined);
   const followingAuthorsHex = useMemo(() => {
     const normalized = new Set<string>();
     for (const author of followingAuthors) {
@@ -1249,7 +1221,7 @@ const App = () => {
         handleWorkerEvent(mapNToolEvent(event));
       }
     });
-  }, []);
+  }, [handleWorkerEvent]);
 
   const closeThread = () => setActiveThreadId(null);
 
@@ -1446,17 +1418,6 @@ const App = () => {
     flushPendingEvents(COLUMN_FILL_TARGET - events.length);
   }, [pendingEvents.length, events.length, flushPendingEvents]);
 
-  const flushNewPosts = (
-    requested = PENDING_FLUSH_CHUNK,
-    predicate?: (event: NostrEvent) => boolean
-  ) => {
-    if (!pendingEvents.length) return;
-    const available = predicate ? pendingEvents.filter(predicate).length : pendingEvents.length;
-    if (!available) return;
-    const flushCount = Math.min(Math.max(requested, 1), PENDING_FLUSH_CHUNK, available);
-    flushPendingEvents(flushCount, predicate);
-  };
-
   const toggleExpansion = (eventId: string) => {
     setExpandedPosts((prev) => {
       const next = new Set(prev);
@@ -1528,11 +1489,12 @@ const App = () => {
         return;
       }
 
+      const relays = managedRelaysRef.current;
       setIsSearchLoading(true);
       try {
         if (needsProfile && pubkeyHex) {
           remoteSearchCacheRef.current.profiles.add(pubkeyHex);
-          const remoteProfile = await NostrService.fetchProfile(pubkeyHex, managedRelays);
+          const remoteProfile = await NostrService.fetchProfile(pubkeyHex, relays);
           if (remoteProfile?.metadata) {
             updateProfileMetadata(pubkeyHex, remoteProfile.metadata, remoteProfile.created_at);
           }
@@ -1633,10 +1595,12 @@ const App = () => {
       for (const pubkey of queue) {
         if (cancelled) break;
         try {
-                      const remoteProfile = await NostrService.fetchProfile(pubkey, managedRelays);
-                      if (remoteProfile?.metadata) {
-                        updateProfileMetadata(pubkey, remoteProfile.metadata, remoteProfile.created_at);
-                      }        } finally {
+          const relays = managedRelaysRef.current;
+          const remoteProfile = await NostrService.fetchProfile(pubkey, relays);
+          if (remoteProfile?.metadata) {
+            updateProfileMetadata(pubkey, remoteProfile.metadata, remoteProfile.created_at);
+          }
+        } finally {
           pendingProfileRequestsRef.current.delete(pubkey);
         }
       }
@@ -1650,7 +1614,8 @@ const App = () => {
   useEffect(() => {
     if (!canonicalAuthPubkey) return;
     const syncProfile = async () => {
-      const remoteProfile = await NostrService.fetchProfile(canonicalAuthPubkey, managedRelays);
+      const relays = managedRelaysRef.current;
+      const remoteProfile = await NostrService.fetchProfile(canonicalAuthPubkey, relays);
       if (remoteProfile?.metadata) {
         updateProfileMetadata(canonicalAuthPubkey, remoteProfile.metadata, remoteProfile.created_at);
       }
@@ -1818,7 +1783,7 @@ const App = () => {
         </div>
       </article>
     );
-  });
+  };
 
   const renderEmbeddedEvent = (event: NostrEvent) => {
     const referenced = getReferencedEvent(event);
@@ -2057,7 +2022,7 @@ const App = () => {
 
     const firstHashtag = event.tags?.find((tag) => tag[0] === "#" && tag[1])?.[1];
     const mediaPreview = renderAttachments(event.attachments);
-    const handleKeyDown = (keyboardEvent: KeyboardEvent<HTMLElement>) => {
+    const handleKeyDown = (keyboardEvent: ReactKeyboardEvent<HTMLElement>) => {
       if (!onCardClick) return;
       if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
         keyboardEvent.preventDefault();
@@ -2099,7 +2064,8 @@ const App = () => {
         </div>
       </article>
     );
-  };
+  });
+  PostCard.displayName = "PostCard";
 
   useEffect(() => {
     const timelines = Array.from(document.querySelectorAll<HTMLDivElement>(".timeline"));
@@ -2780,6 +2746,11 @@ type LazyMediaProps = {
 };
 
 type MediaErrorHandler = (message?: string) => void;
+
+const describeMediaError = (error: MediaError | null | undefined) => {
+  if (!error) return "Unknown media error";
+  return error.message ? `${error.message} (code ${error.code})` : `Media error code ${error.code}`;
+};
 
 const LazyVideo = ({ url, onError }: LazyMediaProps) => {
   const [ref, visible] = useInView<HTMLDivElement>();

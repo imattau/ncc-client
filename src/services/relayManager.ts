@@ -22,15 +22,6 @@ const normalizeRelay = (relay: string) => relay.trim();
 
 const isValidRelay = (relay: string) => /^wss?:\/\/[^\s]+$/.test(relay);
 
-const isNcc02Relay = (relay: string) => {
-  try {
-    const parsed = new URL(relay);
-    return parsed.hostname.toLowerCase().startsWith("npub1");
-  } catch {
-    return false;
-  }
-};
-
 const extractServiceId = (relay: string) => {
   try {
     const parsed = new URL(relay);
