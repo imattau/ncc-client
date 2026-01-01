@@ -582,8 +582,10 @@ const App = () => {
 
   useEffect(() => {
     if (relayStatus?.connected === false) {
-      setIsOfflineMode(true);
-      if (!events.length) {
+      if (!isOfflineMode) {
+        setIsOfflineMode(true);
+      }
+      if (!events.length && !isLoadingCacheRef.current) {
         void loadNextCacheBatch();
       }
       return;
