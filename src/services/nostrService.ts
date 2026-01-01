@@ -1,9 +1,50 @@
 import { nip19 } from "nostr-tools";
+import { normalizeURL } from "nostr-tools/utils";
 import type { Event as NostrToolsEvent } from "nostr-tools";
 import { DEFAULT_RELAYS } from "../config/relays";
 import { getRelayPool } from "./nccClient";
 
 import type { Profile } from "./userManager"; // Import Profile type
+
+let sleepingRelaysSet = new Set<string>();
+
+const normalizeRelayEntry = (relay: string) => {
+  try {
+    const normalized = normalizeURL(relay.trim());
+    return normalized;
+  } catch {
+    const trimmed = relay.trim();
+    return trimmed || null;
+  }
+};
+
+const sanitizeRelays = (relays: string[]) => {
+  const seen = new Set<string>();
+  const normalized: string[] = [];
+  for (const relay of relays) {
+    const normalizedRelay = normalizeRelayEntry(relay);
+    if (!normalizedRelay) continue;
+    if (seen.has(normalizedRelay)) continue;
+    seen.add(normalizedRelay);
+    normalized.push(normalizedRelay);
+  }
+  return normalized;
+};
+
+const getEligibleRelays = (relays: string[]) => {
+  if (!relays.length) return [];
+  const normalized = sanitizeRelays(relays);
+  return normalized.filter((relay) => !sleepingRelaysSet.has(relay));
+};
+
+export const setSleepingRelays = (relays: string[] | undefined) => {
+  if (!relays?.length) {
+    sleepingRelaysSet = new Set();
+    return;
+  }
+  const normalized = sanitizeRelays(relays);
+  sleepingRelaysSet = new Set(normalized);
+};
 
 export class NostrService {
   static parsePubkeyFromInput(value: string): string | null {
@@ -38,7 +79,11 @@ export class NostrService {
         authors: [pubkey],
         limit: 1
       };
-      const event = await pool.get(relays, filter);
+      const targetRelays = getEligibleRelays(relays);
+      if (!targetRelays.length) {
+        return null;
+      }
+      const event = await pool.get(targetRelays, filter);
       if (!event || !event.content) return null;
       try {
         return {
@@ -59,7 +104,11 @@ export class NostrService {
   static async fetchEvent(eventId: string, relays: string[] = DEFAULT_RELAYS): Promise<NostrToolsEvent | null> {
     try {
       const pool = getRelayPool();
-      const events = await pool.querySync(relays, {
+      const targetRelays = getEligibleRelays(relays);
+      if (!targetRelays.length) {
+        return null;
+      }
+      const events = await pool.querySync(targetRelays, {
         ids: [eventId],
         kinds: [1, 30023],
         limit: 1
@@ -75,7 +124,11 @@ export class NostrService {
       const normalized = hashtag.replace(/^#+/, "").toLowerCase();
       if (!normalized) return [];
       const pool = getRelayPool();
-      const events = await pool.querySync(relays, {
+      const targetRelays = getEligibleRelays(relays);
+      if (!targetRelays.length) {
+        return [];
+      }
+      const events = await pool.querySync(targetRelays, {
         kinds: [1, 30023],
         "#t": [normalized],
         limit: 30
@@ -91,7 +144,11 @@ export class NostrService {
       const trimmed = keyword.trim().toLowerCase();
       if (!trimmed) return [];
       const pool = getRelayPool();
-      const events = await pool.querySync(relays, {
+      const targetRelays = getEligibleRelays(relays);
+      if (!targetRelays.length) {
+        return [];
+      }
+      const events = await pool.querySync(targetRelays, {
         kinds: [1, 30023],
         limit: 40
       });

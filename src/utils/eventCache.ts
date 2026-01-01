@@ -1,73 +1,12 @@
 import type { NostrEvent } from "../types/events";
-
-const DB_NAME = "ncc-client-events";
-const STORE_NAME = "events";
-const DB_VERSION = 1;
-const MAX_CACHE_SIZE = 500;
-const isBrowser = typeof window !== "undefined" && "indexedDB" in window;
-
-const openDatabase = () =>
-  new Promise<IDBDatabase>((resolve, reject) => {
-    if (!isBrowser) {
-      reject(new Error("IndexedDB unavailable"));
-      return;
-    }
-    const request = window.indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = () => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains(STORE_NAME)) {
-        const store = db.createObjectStore(STORE_NAME, { keyPath: "id" });
-        store.createIndex("created_at", "created_at");
-      }
-    };
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-
-const waitForTransaction = (tx: IDBTransaction) =>
-  new Promise<void>((resolve, reject) => {
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-
-const pruneOldEvents = async (db: IDBDatabase, keep = MAX_CACHE_SIZE) => {
-  return new Promise<void>((resolve, reject) => {
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    const countRequest = store.count();
-    countRequest.onsuccess = () => {
-      const total = countRequest.result;
-      if (total <= keep) {
-        resolve();
-        return;
-      }
-      const toRemove = total - keep;
-      let removed = 0;
-      const cursorRequest = store.index("created_at").openCursor(null, "next");
-      cursorRequest.onsuccess = () => {
-        const cursor = cursorRequest.result;
-        if (cursor && removed < toRemove) {
-          cursor.delete();
-          removed += 1;
-          cursor.continue();
-          return;
-        }
-        resolve();
-      };
-      cursorRequest.onerror = () => reject(cursorRequest.error);
-    };
-    countRequest.onerror = () => reject(countRequest.error);
-  });
-};
+import { openDatabase, EVENT_STORE_NAME } from "./eventDb";
 
 export const readCachedEvents = async (limit = 100, skip = 0): Promise<NostrEvent[]> => {
-  if (!isBrowser) return [];
   try {
     const db = await openDatabase();
     return new Promise<NostrEvent[]>((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, "readonly");
-      const store = tx.objectStore(STORE_NAME);
+      const tx = db.transaction(EVENT_STORE_NAME, "readonly");
+      const store = tx.objectStore(EVENT_STORE_NAME);
       const index = store.index("created_at");
       const events: NostrEvent[] = [];
       let skipped = 0;
@@ -94,21 +33,5 @@ export const readCachedEvents = async (limit = 100, skip = 0): Promise<NostrEven
     });
   } catch {
     return [];
-  }
-};
-
-export const cacheEvents = async (entries: NostrEvent[]) => {
-  if (!isBrowser || !entries.length) return;
-  try {
-    const db = await openDatabase();
-    const tx = db.transaction(STORE_NAME, "readwrite");
-    const store = tx.objectStore(STORE_NAME);
-    entries.forEach((entry) => {
-      store.put(entry);
-    });
-    await waitForTransaction(tx);
-    await pruneOldEvents(db);
-  } catch {
-    // Quietly ignore failures
   }
 };

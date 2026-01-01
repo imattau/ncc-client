@@ -1,6 +1,7 @@
 import {
   ChangeEvent,
   FormEvent,
+  KeyboardEvent,
   SyntheticEvent,
   useCallback,
   useEffect,
@@ -31,14 +32,14 @@ import SearchPanel from "./components/SearchPanel";
 import { SearchManager } from "./services/searchManager";
 import type { SearchEntry } from "./types/search";
 import { useInView } from "./hooks/useInView";
-import { NostrService } from "./services/nostrService";
+import { NostrService, setSleepingRelays } from "./services/nostrService";
 import {
   classifyNccDiscoveryEvent,
   INITIAL_NCC_STATS,
   type NccDiscoveryStats,
   type NccDiscoveryType
 } from "./utils/nccDiscovery";
-import { cacheEvents, readCachedEvents } from "./utils/eventCache";
+import { readCachedEvents } from "./utils/eventCache";
 import type { RelayWorkerStatus } from "./workers/relayWorker.handlers";
 import { StatusBar } from "./components/StatusBar";
 
@@ -163,6 +164,10 @@ const buildFollowingBaseFilters = (
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
 
+const failedImageCache = new Set<string>();
+const failedVideoCache = new Set<string>();
+const failedAvatarCache = new Set<string>();
+
 const CACHE_BATCH_SIZE = 80;
 const FEED_INCREMENT = 20;
 
@@ -188,6 +193,16 @@ const INITIAL_QR_STATE: QrState = {
   status: "idle",
   secret: null
 };
+
+type TimelineFilterId = "following" | "articles" | "serviceRecords" | "locators" | "conventions";
+
+const FILTER_DEFINITIONS: { id: TimelineFilterId; label: string }[] = [
+  { id: "following", label: "Following" },
+  { id: "articles", label: "Articles" },
+  { id: "serviceRecords", label: "Service Records" },
+  { id: "locators", label: "NCC-05 Locators" },
+  { id: "conventions", label: "Conventions" }
+];
 
 const App = () => {
   const { connected, refresh } = useNccClient();
@@ -218,8 +233,6 @@ const App = () => {
   const cacheLoadedRef = useRef(0);
   const hasMoreCacheEventsRef = useRef(true);
   const isLoadingCacheRef = useRef(false);
-  const followingSentinelRef = useRef<HTMLDivElement>(null);
-  const articlesSentinelRef = useRef<HTMLDivElement>(null);
   const globalSentinelRef = useRef<HTMLDivElement>(null);
   const [events, setEvents] = useState<NostrEvent[]>(() => {
     if (typeof window === "undefined") return [];
@@ -230,14 +243,20 @@ const App = () => {
       return [];
     }
   });
+  const eventsById = useMemo(() => {
+    const map = new Map<string, NostrEvent>();
+    events.forEach((event) => map.set(event.id, event));
+    return map;
+  }, [events]);
+  const eventsByIdRef = useRef(eventsById);
+  eventsByIdRef.current = eventsById;
+
   const [mutedAuthors, setMutedAuthors] = useState<string[]>(() => userManager.getMutedAuthors());
   const [likedEvents, setLikedEvents] = useState<string[]>([]);
   const [repostedEvents, setRepostedEvents] = useState<string[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [draft, setDraft] = useState({ content: "", type: "note" });
   const [attachedFile, setAttachedFile] = useState<File | null>(null);
-  const [followingLimit, setFollowingLimit] = useState(20);
-  const [articlesLimit, setArticlesLimit] = useState(20);
   const [globalLimit, setGlobalLimit] = useState(20);
   const [pendingEvents, setPendingEvents] = useState<NostrEvent[]>([]);
   const [profiles, setProfiles] = useState<Record<string, Profile>>(() => userManager.getProfiles());
@@ -245,7 +264,6 @@ const App = () => {
   const nccDiscoverySeenRef = useRef<Set<string>>(new Set());
   const deletedEventIdsRef = useRef<Set<string>>(new Set());
   const [expandedPosts, setExpandedPosts] = useState<Set<string>>(new Set());
-  const [activeColumn, setActiveColumn] = useState<"following" | "articles" | "global">("following");
   const [pullDistance, setPullDistance] = useState(0);
   const [isManualRefreshing, setIsManualRefreshing] = useState(false);
   const profileChipRef = useRef<HTMLButtonElement>(null);
@@ -270,10 +288,6 @@ const App = () => {
   const [relayMessage, setRelayMessage] = useState<{ type: "info" | "error"; text: string } | null>(null);
   const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [isCompactView, setIsCompactView] = useState(() => {
-    if (typeof window === "undefined") return false;
-    return window.matchMedia("(max-width: 960px)").matches;
-  });
   const searchManagerRef = useRef<SearchManager>();
   const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
   const [isOfflineMode, setIsOfflineMode] = useState(false);
@@ -291,6 +305,9 @@ const App = () => {
     }
   });
   const blockedMediaHostsRef = useRef<Set<string>>(blockedMediaHosts);
+  const [activeFilters, setActiveFilters] = useState<TimelineFilterId[]>([]);
+  const [focusedEventId, setFocusedEventId] = useState<string | null>(null);
+  const focusedEvent = focusedEventId ? eventsById.get(focusedEventId) ?? null : null;
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
   }
@@ -300,14 +317,10 @@ const App = () => {
     hashtags: new Set<string>(),
     keywords: new Set<string>()
   });
-  const eventsById = useMemo(() => {
-    const map = new Map<string, NostrEvent>();
-    events.forEach((event) => map.set(event.id, event));
-    return map;
-  }, [events]);
-
-  const eventsByIdRef = useRef(eventsById);
-  eventsByIdRef.current = eventsById;
+  const fetchedProfilesRef = useRef<Set<string>>(new Set());
+  const processedKind0Ref = useRef<Set<string>>(new Set());
+  const cacheFlushTimeoutRef = useRef<number | null>(null);
+  const cacheWorkerRef = useRef<Worker | null>(null);
   const pullStartRef = useRef<number | null>(null);
   const pullTargetRef = useRef<HTMLDivElement | null>(null);
   const pullDistanceRef = useRef<number>(0);
@@ -344,6 +357,15 @@ const App = () => {
       queueFlushScheduledRef.current = true;
       queueFlushTimeoutRef.current = window.setTimeout(processIncomingBatch, 50);
     }
+  }, []);
+
+  useEffect(() => {
+    const worker = new Worker(new URL("./workers/cacheWorker.ts", import.meta.url), { type: "module" });
+    cacheWorkerRef.current = worker;
+    return () => {
+      worker.terminate();
+      cacheWorkerRef.current = null;
+    };
   }, []);
 
   const scheduleIncomingFlush = useCallback(() => {
@@ -391,15 +413,27 @@ const App = () => {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      // Cache only the most recent localCacheLimit events to avoid exceeding localStorage limits
-      window.localStorage.setItem(
-        CACHED_EVENTS_KEY,
-        JSON.stringify(events.slice(0, localCacheLimit))
-      );
+      window.localStorage.setItem(CACHED_EVENTS_KEY, JSON.stringify(events.slice(0, localCacheLimit)));
     } catch {
       // ignore persistence failures
     }
-    void cacheEvents(events.slice(0, indexedDbCacheLimit));
+    if (!cacheWorkerRef.current) return;
+    if (cacheFlushTimeoutRef.current) {
+      window.clearTimeout(cacheFlushTimeoutRef.current);
+    }
+    cacheFlushTimeoutRef.current = window.setTimeout(() => {
+      cacheWorkerRef.current?.postMessage({
+        type: "cache",
+        entries: events.slice(0, indexedDbCacheLimit)
+      });
+    }, 400);
+
+    return () => {
+      if (cacheFlushTimeoutRef.current) {
+        window.clearTimeout(cacheFlushTimeoutRef.current);
+        cacheFlushTimeoutRef.current = null;
+      }
+    };
   }, [events, localCacheLimit, indexedDbCacheLimit]);
 
   const loadNextCacheBatch = useCallback(async () => {
@@ -458,22 +492,6 @@ const App = () => {
       (entries) => {
         entries.forEach((entry) => {
           if (!entry.isIntersecting) return;
-          if (
-            entry.target === followingSentinelRef.current &&
-            (!isCompactView || activeColumn === "following")
-          ) {
-            setFollowingLimit((prev) =>
-              Math.min(prev + FEED_INCREMENT, indexedDbCacheLimit)
-            );
-          }
-          if (
-            entry.target === articlesSentinelRef.current &&
-            (!isCompactView || activeColumn === "articles")
-          ) {
-            setArticlesLimit((prev) =>
-              Math.min(prev + FEED_INCREMENT, indexedDbCacheLimit)
-            );
-          }
           if (entry.target === globalSentinelRef.current) {
             void loadNextCacheBatch();
           }
@@ -481,13 +499,12 @@ const App = () => {
       },
       { rootMargin: "200px" }
     );
-    [followingSentinelRef, articlesSentinelRef, globalSentinelRef].forEach((ref) => {
-      if (ref.current) {
-        observer.observe(ref.current);
-      }
-    });
+    const target = globalSentinelRef.current;
+    if (target) {
+      observer.observe(target);
+    }
     return () => observer.disconnect();
-  }, [activeColumn, isCompactView, indexedDbCacheLimit, loadNextCacheBatch]);
+  }, [indexedDbCacheLimit, loadNextCacheBatch]);
 
   useEffect(() => {
     if (relayStatus?.connected === false) {
@@ -514,25 +531,28 @@ const App = () => {
     };
   }, [relayManager]);
 
-    const updateProfileMetadata = useCallback(
+  const updateProfileMetadata = useCallback(
+    (pubkey: string, metadata: Omit<Profile, "created_at">, createdAt: number) => {
+      const normalized = canonicalizePubkey(pubkey);
+      if (!normalized) return;
 
-      (pubkey: string, metadata: Omit<Profile, 'created_at'>, createdAt: number) => {
+      const result = userManager.updateProfile(normalized, { ...metadata, created_at: createdAt });
+      fetchedProfilesRef.current.add(normalized);
 
-        const normalized = canonicalizePubkey(pubkey);
-
-        if (!normalized) return;
-
-        console.log("[Profile] Updating", normalized, metadata.name || metadata.display_name, "(created at", createdAt, ")");
-
-        const nextProfiles = userManager.updateProfile(normalized, { ...metadata, created_at: createdAt });
-
-        setProfiles({ ...nextProfiles });
-
-      },
-
-      [userManager]
-
-    );
+      if (result.updated) {
+        console.log(
+          "[Profile] Updating",
+          normalized,
+          metadata.name || metadata.display_name,
+          "(created at",
+          createdAt,
+          ")"
+        );
+        setProfiles({ ...result.profiles });
+      }
+    },
+    [userManager]
+  );
 
   const handleContactEvent = useCallback(
     (event: NostrEvent) => {
@@ -573,15 +593,20 @@ const App = () => {
   const handleWorkerEvent = useCallback(
     (event: NostrEvent) => {
       if (event.kind === 0) {
+        if (processedKind0Ref.current.has(event.id)) {
+          return;
+        }
+        processedKind0Ref.current.add(event.id);
         try {
           const metadata = JSON.parse(event.content);
           if (metadata && typeof metadata === "object") {
             console.log("[Profile] Received Kind 0 from stream", event.author);
             updateProfileMetadata(event.author, metadata, event.created_at);
           }
-                  } catch (e) {
-                    console.error("[Profile] Failed to parse Kind 0 event content", event.id, e);
-                  }        return;
+        } catch (e) {
+          console.error("[Profile] Failed to parse Kind 0 event content", event.id, e);
+        }
+        return;
       }
 
       if (event.kind === 3 && handleContactEvent(event)) {
@@ -817,26 +842,6 @@ const App = () => {
   }, [isSearchOpen]);
 
   useEffect(() => {
-    if (typeof window === "undefined") return;
-    const matcher = window.matchMedia("(max-width: 960px)");
-    const listener = (event: MediaQueryListEvent) => {
-      setIsCompactView(event.matches);
-    };
-    if (matcher.addEventListener) {
-      matcher.addEventListener("change", listener);
-    } else {
-      matcher.addListener(listener);
-    }
-    return () => {
-      if (matcher.removeEventListener) {
-        matcher.removeEventListener("change", listener);
-      } else {
-        matcher.removeListener(listener);
-      }
-    };
-  }, []);
-
-  useEffect(() => {
     if (!isSignInMenuOpen) return;
     const handleOutsideClick = (event: MouseEvent) => {
       if (signInMenuRef.current?.contains(event.target as Node)) return;
@@ -885,8 +890,7 @@ const App = () => {
       authManager.persistSession(session);
       setIsSignInMenuOpen(false);
       setSignInError(null);
-      setActiveColumn("following");
-      
+
       // Sync NIP-65 relays
       relayManager.fetchNip65Relays(session.pubkey).then((relays) => {
         if (relays) {
@@ -894,7 +898,7 @@ const App = () => {
         }
       });
     },
-    [setActiveColumn, relayManager]
+    [relayManager]
   );
 
   const handleSignOut = useCallback(async () => {
@@ -1096,6 +1100,10 @@ const App = () => {
     setRelayStatus(status);
   }, []);
 
+  useEffect(() => {
+    setSleepingRelays(relayStatus?.sleepingRelays ?? []);
+  }, [relayStatus?.sleepingRelays]);
+
   const followingAuthors = useMemo(
     () => userManager.getEffectiveFollowing(authSession?.pubkey ?? undefined),
     [authSession?.pubkey, userFollowing, userManager]
@@ -1211,6 +1219,56 @@ const App = () => {
     [activeHashtag]
   );
 
+  const matchesFilterForEvent = useCallback(
+    (event: NostrEvent, filterId: TimelineFilterId) => {
+      switch (filterId) {
+        case "following":
+          return followingAuthorsHex.includes(event.author);
+        case "articles":
+          return event.isArticle || event.kind === 30023;
+        case "serviceRecords":
+          return event.kind === 30059;
+        case "locators":
+          return event.kind === 30058;
+        case "conventions":
+          return event.kind === 0;
+        default:
+          return false;
+      }
+    },
+    [followingAuthorsHex]
+  );
+
+  const toggleFilter = useCallback((filterId: TimelineFilterId) => {
+    setActiveFilters((prev) => {
+      if (prev.includes(filterId)) {
+        return prev.filter((id) => id !== filterId);
+      }
+      return [...prev, filterId];
+    });
+  }, []);
+
+  const openFocusedEvent = useCallback((eventId: string) => {
+    setFocusedEventId(eventId);
+  }, []);
+
+  const closeFocusedEvent = useCallback(() => {
+    setFocusedEventId(null);
+  }, []);
+
+  useEffect(() => {
+    if (!focusedEvent) return;
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        closeFocusedEvent();
+      }
+    };
+    window.addEventListener("keydown", handleKey);
+    return () => {
+      window.removeEventListener("keydown", handleKey);
+    };
+  }, [focusedEvent, closeFocusedEvent]);
+
   const scheduleEventCommit = useCallback(
     (incoming: NostrEvent[]) => {
       if (!incoming.length) return;
@@ -1266,84 +1324,30 @@ const App = () => {
     [pendingEvents, scheduleEventCommit]
   );
 
-  const followingNotes = useMemo(
-    () =>
-      [...events]
-        .filter(
-          (event) =>
-            followingAuthorsHex.includes(event.author) &&
-            !mutedAuthors.includes(event.author) &&
-            event.kind === 1 &&
-            !event.isArticle &&
-            matchesActiveHashtag(event)
-        )
-        .sort((a, b) => b.created_at - a.created_at),
-    [events, mutedAuthors, followingAuthorsHex]
-  );
-
-  const articleEvents = useMemo(
-    () =>
-      events
-        .filter((event) => (event.isArticle || event.kind === 30023) && matchesActiveHashtag(event))
-        .sort((a, b) => b.created_at - a.created_at),
-    [events, matchesActiveHashtag]
-  );
-
-  const globalEvents = useMemo(() => {
+  const baseGlobalEvents = useMemo(() => {
     const pool = [...events]
       .filter((event) => !mutedAuthors.includes(event.author))
       .sort((a, b) => b.created_at - a.created_at);
 
-    const withHashtag = pool.filter(matchesActiveHashtag);
+    return pool.filter(matchesActiveHashtag);
+  }, [events, mutedAuthors, matchesActiveHashtag]);
 
-    return withHashtag;
-  }, [events, mutedAuthors]);
+  const filteredGlobalEvents = useMemo(() => {
+    if (!activeFilters.length) {
+      return baseGlobalEvents;
+    }
+    return baseGlobalEvents.filter((event) =>
+      activeFilters.some((filterId) => matchesFilterForEvent(event, filterId))
+    );
+  }, [activeFilters, baseGlobalEvents, matchesFilterForEvent]);
 
-  const followingDisplay = followingNotes.slice(0, followingLimit);
-  const articleDisplay = articleEvents.slice(0, articlesLimit);
-  const globalDisplay = globalEvents.slice(0, globalLimit);
-  const showFollowingSkeleton = followingDisplay.length < 3;
-  const showArticleSkeleton = articleDisplay.length < 3;
+  const globalDisplay = filteredGlobalEvents.slice(0, globalLimit);
   const showGlobalSkeleton = globalDisplay.length < 3;
 
-    const isFollowingEvent = useCallback(
-      (event: NostrEvent) =>
-        followingAuthorsHex.includes(event.author) &&
-        !mutedAuthors.includes(event.author) &&
-        event.kind === 1 &&
-        !event.isArticle,
-      [followingAuthorsHex, mutedAuthors]
-    );
-  
-    const isArticleEvent = useCallback(
-      (event: NostrEvent) =>
-        followingAuthorsHex.includes(event.author) && (event.isArticle || event.kind === 30023),
-      [followingAuthorsHex]
-    );  
-    const showFollowingColumn = isSignedIn && (!isCompactView || activeColumn === "following");
-    const showArticleColumn = isSignedIn && (!isCompactView || activeColumn === "articles");
-
-    const showGlobalColumn = !isCompactView || activeColumn === "global" || !isSignedIn;
-
-  
-
-    useEffect(() => {
-
-      if (!pendingEvents.length || events.length >= COLUMN_FILL_TARGET) return;
-
-      flushPendingEvents(COLUMN_FILL_TARGET - events.length);
-
-    }, [pendingEvents.length, events.length, flushPendingEvents]);
-
-  
-
-    useEffect(() => {
-
-      if (!isSignedIn) {
-      setActiveColumn("global");
-      setIsProfileModalOpen(false);
-    }
-  }, [isSignedIn]);
+  useEffect(() => {
+    if (!pendingEvents.length || events.length >= COLUMN_FILL_TARGET) return;
+    flushPendingEvents(COLUMN_FILL_TARGET - events.length);
+  }, [pendingEvents.length, events.length, flushPendingEvents]);
 
   const flushNewPosts = (
     requested = PENDING_FLUSH_CHUNK,
@@ -1510,7 +1514,14 @@ const App = () => {
       const normalized = canonicalizePubkey(event.author);
       if (!normalized) continue;
       const existingProfile = profiles[normalized];
-      if (existingProfile && (existingProfile.name || existingProfile.display_name)) continue;
+      if (
+        existingProfile &&
+        (existingProfile.name || existingProfile.display_name || existingProfile.picture)
+      ) {
+        fetchedProfilesRef.current.add(normalized);
+        continue;
+      }
+      if (fetchedProfilesRef.current.has(normalized)) continue;
       if (pendingProfileRequestsRef.current.has(normalized)) continue;
       pendingProfileRequestsRef.current.add(normalized);
       queue.push(normalized);
@@ -1568,8 +1579,8 @@ const App = () => {
     const parentId = getParentId(event);
     const parentEvent = parentId ? eventsById.get(parentId) : null;
 
-    if (profile) {
-      console.debug("[Profile] Found for render", normalizedAuthor, profile.picture ? "has picture" : "no picture");
+    if (profile?.picture) {
+      // avoid redundant logs to keep console quieter
     }
 
     return (
@@ -1577,7 +1588,7 @@ const App = () => {
         <span className="author-pill" title={`${displayName} (${event.author})`}>
           <span className="author-avatar">
             {profile?.picture ? (
-              <img src={profile.picture} alt={displayName} loading="lazy" />
+              <AvatarImage src={profile.picture} alt={displayName} />
             ) : (
               <span>{initials}</span>
             )}
@@ -1608,10 +1619,26 @@ const App = () => {
     const uniqueHashtags = Array.from(new Set(hashtags));
 
     const uniqueLinks = Array.from(new Set(links.filter(Boolean)));
-    const previewLinks = uniqueLinks.slice(0, 3);
+    const inlineImageLink = uniqueLinks.find((link) => MediaManager.getMediaType(link) === "image");
+    const shouldInlineImage = inlineImageLink && !event.attachments?.length;
+    const inlineImagePreview = shouldInlineImage
+      ? renderAttachments([
+          {
+            url: inlineImageLink,
+            type: "image",
+            description: "Inline link preview"
+          }
+        ])
+      : null;
+    const filteredLinks = shouldInlineImage
+      ? uniqueLinks.filter((link) => link !== inlineImageLink)
+      : uniqueLinks;
+    const maxPreviewLinks = isExpanded ? 3 : 1;
+    const previewLinks = filteredLinks.slice(0, maxPreviewLinks);
 
     return (
       <div className="content-block">
+        {inlineImagePreview}
         {usesMarkdown && isExpanded && sanitizedHtml ? (
           <div className="content-html" dangerouslySetInnerHTML={{ __html: sanitizedHtml }} />
         ) : (
@@ -1680,7 +1707,6 @@ const App = () => {
       <article className="embedded-card">
         <div className="stat-pills">
           {renderAuthorPill(referenced)}
-          <span className="stat-pill kind-pill">{kindLabel(referenced)}</span>
         </div>
         {renderEventContent(referenced)}
         {renderAttachments(referenced.attachments)}
@@ -1702,58 +1728,42 @@ const App = () => {
 
   const renderAttachments = (attachments?: Attachment[]) => {
     if (!attachments?.length) return null;
+    const attachment = attachments[0];
+    if (!attachment) return null;
+    const key = `${attachment.url ?? "attach"}-0`;
+    const mediaType = MediaManager.getMediaType(attachment.url ?? "", attachment.type);
     return (
-      <div className="attachment-grid">
-        {attachments.map((attachment, index) => {
-          const key = `${attachment.url ?? "attach"}-${index}`;
-          const mediaType = MediaManager.getMediaType(attachment.url ?? "", attachment.type);
-          if (mediaType === "image" && attachment.url) {
-            return (
-              <LazyImage
-                key={key}
-                url={attachment.url}
-                alt={attachment.description ?? "attachment"}
-                className="attachment-item"
-              />
-            );
-          }
-
-          if (attachment.url && mediaType === "audio") {
-            return (
-              <LazyAudio
-                key={key}
-                url={attachment.url}
-                onError={(error) => handleMediaError(attachment.url ?? "unknown", "audio", error)}
-              />
-            );
-          }
-
-          if (attachment.url && mediaType === "playlist") {
-            return (
-              <LazyPlaylistPlayer
-                key={key}
-                url={attachment.url}
-                onError={(error) => handleMediaError(attachment.url ?? "unknown", "playlist", error)}
-              />
-            );
-          }
-
-          if (attachment.url && mediaType === "video") {
-            return (
-              <LazyVideo
-                key={key}
-                url={attachment.url}
-                onError={(error) => handleMediaError(attachment.url ?? "unknown", "video", error)}
-              />
-            );
-          }
-
-          return (
-            <a key={key} href={attachment.url ?? "#"} target="_blank" rel="noreferrer" className="attachment-file">
-              {attachment.description ?? attachment.url ?? "Download asset"}
-            </a>
-          );
-        })}
+      <div className="attachment-preview">
+        {mediaType === "image" && attachment.url ? (
+          <LazyImage
+            key={key}
+            url={attachment.url}
+            alt={attachment.description ?? "attachment"}
+            className="attachment-item"
+          />
+        ) : attachment.url && mediaType === "audio" ? (
+          <LazyAudio
+            key={key}
+            url={attachment.url}
+            onError={(error) => handleMediaError(attachment.url ?? "unknown", "audio", error)}
+          />
+        ) : attachment.url && mediaType === "playlist" ? (
+          <LazyPlaylistPlayer
+            key={key}
+            url={attachment.url}
+            onError={(error) => handleMediaError(attachment.url ?? "unknown", "playlist", error)}
+          />
+        ) : attachment.url && mediaType === "video" ? (
+          <LazyVideo
+            key={key}
+            url={attachment.url}
+            onError={(error) => handleMediaError(attachment.url ?? "unknown", "video", error)}
+          />
+        ) : (
+          <a className="attachment-file" href={attachment.url ?? "#"} target="_blank" rel="noreferrer">
+            {attachment.description ?? attachment.url ?? "Download asset"}
+          </a>
+        )}
       </div>
     );
   };
@@ -1867,7 +1877,10 @@ const App = () => {
         <button
           type="button"
           className={isLiked ? "active-like" : ""}
-          onClick={() => handleAction("like", event.id)}
+          onClick={(mouseEvent) => {
+            mouseEvent.stopPropagation();
+            handleAction("like", event.id);
+          }}
           title={isLiked ? "Unlike" : "Like"}
         >
           <svg viewBox="0 0 24 24" fill={isLiked ? "currentColor" : "none"} stroke="currentColor">
@@ -1878,7 +1891,10 @@ const App = () => {
         <button
           type="button"
           className={isReposted ? "active-repost" : ""}
-          onClick={() => handleAction("repost", event.id)}
+          onClick={(mouseEvent) => {
+            mouseEvent.stopPropagation();
+            handleAction("repost", event.id);
+          }}
           title={isReposted ? "Undo Repost" : "Repost"}
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -1888,7 +1904,10 @@ const App = () => {
         </button>
         <button
           type="button"
-          onClick={() => openThread(event.id)}
+          onClick={(mouseEvent) => {
+            mouseEvent.stopPropagation();
+            openThread(event.id);
+          }}
           title="Comments"
         >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -1896,12 +1915,26 @@ const App = () => {
           </svg>
           <span>{commentCount > 0 ? commentCount : ""}</span>
         </button>
-        <button type="button" onClick={() => handleShare(event)} title="Share">
+        <button
+          type="button"
+          onClick={(mouseEvent) => {
+            mouseEvent.stopPropagation();
+            handleShare(event);
+          }}
+          title="Share"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
           </svg>
         </button>
-        <button type="button" onClick={() => handleAction("mute", event.id, event.author)} title="Mute Author">
+        <button
+          type="button"
+          onClick={(mouseEvent) => {
+            mouseEvent.stopPropagation();
+            handleAction("mute", event.id, event.author);
+          }}
+          title="Mute Author"
+        >
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
             <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M9 9l-6 6m0-6l6 6m12-12l-6 6m0-6l6 6" />
           </svg>
@@ -1910,36 +1943,59 @@ const App = () => {
   );
 };
 
-  const PostCard = ({ event }: { event: NostrEvent }) => {
+  type PostCardProps = {
+    event: NostrEvent;
+    onCardClick?: (eventId: string) => void;
+    isFocused?: boolean;
+  };
+
+  const PostCard = ({ event, onCardClick, isFocused = false }: PostCardProps) => {
     const replyCount = Array.from(eventsById.values()).filter(
       (item) => item.kind === 1 && item.tags?.some((t) => t[0] === "e" && t[1] === event.id)
     ).length;
 
     const firstHashtag = event.tags?.find((tag) => tag[0] === "#" && tag[1])?.[1];
+    const mediaPreview = renderAttachments(event.attachments);
+    const handleKeyDown = (keyboardEvent: KeyboardEvent<HTMLElement>) => {
+      if (!onCardClick) return;
+      if (keyboardEvent.key === "Enter" || keyboardEvent.key === " ") {
+        keyboardEvent.preventDefault();
+        onCardClick(event.id);
+      }
+    };
 
     return (
-      <article className="timeline-card">
-        <div className="stat-pills">
-          {renderAuthorPill(event)}
-          <span className="stat-pill kind-pill">{kindLabel(event)}</span>
-          {replyCount > 0 && (
-            <span className="stat-pill badge-pill" aria-label={`${replyCount} replies`}>
-              {replyCount} replies
+      <article
+        className={`timeline-card ${isFocused ? "is-focused-card" : ""}`}
+        role={onCardClick ? "button" : undefined}
+        tabIndex={onCardClick ? 0 : undefined}
+        onClick={() => onCardClick?.(event.id)}
+        onKeyDown={handleKeyDown}
+      >
+        {mediaPreview}
+        <div className="timeline-card-body">
+          <div className="stat-pills">
+            {renderAuthorPill(event)}
+            {replyCount > 0 && (
+              <span className="stat-pill badge-pill" aria-label={`${replyCount} replies`}>
+                {replyCount} replies
+              </span>
+            )}
+            {firstHashtag && <span className="stat-pill badge-pill">#{firstHashtag}</span>}
+            {event.isArticle && <span className="stat-pill badge-pill longform">Long-form</span>}
+          </div>
+          {renderEventContent(event)}
+          {event.kind === 1059 && renderEmbeddedEvent(event)}
+        </div>
+        <div className="timeline-card-footer">
+          <div className="meta">
+            <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
+            <span title={event.relays?.join(" · ") ?? "relay unknown"}>
+              {event.relays?.join(" · ") ?? "relay unknown"}
             </span>
-          )}
-          {firstHashtag && <span className="stat-pill badge-pill">#{firstHashtag}</span>}
-          {event.isArticle && <span className="stat-pill badge-pill longform">Long-form</span>}
+          </div>
+          {renderActions(event)}
         </div>
-        {renderEventContent(event)}
-        {renderAttachments(event.attachments)}
-        {event.kind === 1059 && renderEmbeddedEvent(event)}
-        <div className="meta">
-          <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
-          <span title={event.relays?.join(" · ") ?? "relay unknown"}>
-            {event.relays?.join(" · ") ?? "relay unknown"}
-          </span>
-        </div>
-        {renderActions(event)}
       </article>
     );
   };
@@ -1998,7 +2054,7 @@ const App = () => {
         node.removeEventListener("touchcancel", handleEnd);
       });
     };
-  }, [showFollowingColumn, showArticleColumn, showGlobalColumn, triggerManualRefresh]);
+  }, [triggerManualRefresh]);
   const profileMetadata = canonicalAuthPubkey ? profiles[canonicalAuthPubkey] : undefined;
   const profileDisplayName =
     profileMetadata?.display_name ?? profileMetadata?.name ?? formatAuthorDisplay(authSession?.pubkey ?? "unknown");
@@ -2312,103 +2368,77 @@ const App = () => {
         </div>
       )}
 
-      {isSignedIn && (
-        <div className="column-tabs">
-          <button
-            type="button"
-            className={activeColumn === "following" ? "active" : ""}
-            onClick={() => setActiveColumn("following")}
-          >
-            Following
-          </button>
-          <button
-            type="button"
-            className={activeColumn === "articles" ? "active" : ""}
-            onClick={() => setActiveColumn("articles")}
-          >
-            Articles (long form)
-          </button>
-          <button
-            type="button"
-            className={activeColumn === "global" ? "active" : ""}
-            onClick={() => setActiveColumn("global")}
-          >
-            Global
-          </button>
-        </div>
-      )}
-
       <div className="app-main-layout">
         {isDrawerOpen && <div className="sidebar-overlay" onClick={() => setIsDrawerOpen(false)} />}
         <aside className={`sidebar ${isDrawerOpen ? "open" : ""}`}>
-        <div className="sidebar-content">
-          <div className="sidebar-header">
-            <h3>Dashboard</h3>
-            <button type="button" className="close-sidebar" onClick={() => setIsDrawerOpen(false)}>
-              ✕
-            </button>
-          </div>
-          <StatusBar
-            connected={connected}
-            managedRelays={managedRelays}
-            relayStatus={relayStatus}
-            isOfflineMode={isOfflineMode}
-            isRelayModalOpen={isRelayModalOpen}
-            setIsRelayModalOpen={setIsRelayModalOpen}
-            isManualRefreshing={isManualRefreshing}
-            triggerManualRefresh={triggerManualRefresh}
-          />
-          <section className="filter-panel">
-            <div className="filter-panel__toggles">
-              <label>
-                <input
-                  type="checkbox"
-                  checked={includeReactions}
-                  onChange={() => setIncludeReactions((prev) => !prev)}
-                />
-                Load Reactions
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={includeServiceRecords}
-                  onChange={() => setIncludeServiceRecords((prev) => !prev)}
-                />
-                Load NCC Service Records
-              </label>
+          <div className="sidebar-content">
+            <div className="sidebar-header">
+              <h3>Dashboard</h3>
+              <button type="button" className="close-sidebar" onClick={() => setIsDrawerOpen(false)}>
+                ✕
+              </button>
             </div>
-            <div className="filter-panel__cache">
-              <label>
-                Local cache limit: {localCacheLimit}
-                <input
-                  type="range"
-                  min={20}
-                  max={200}
-                  step={10}
-                  value={localCacheLimit}
-                  onChange={(event) => setLocalCacheLimit(Number(event.target.value))}
-                />
-              </label>
-              <label>
-                IndexedDB cache limit: {indexedDbCacheLimit}
-                <input
-                  type="range"
-                  min={100}
-                  max={500}
-                  step={50}
-                  value={indexedDbCacheLimit}
-                  onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
-                />
-              </label>
-            </div>
-            <div className="filter-panel__status">
-              {isLoadingMoreCache
-                ? "Loading more cached posts…"
-                : hasMoreCacheEvents
-                ? "Scroll to load more cached posts"
-                : "Cached posts exhausted"}
-            </div>
-          </section>
+            <StatusBar
+              connected={connected}
+              managedRelays={managedRelays}
+              relayStatus={relayStatus}
+              isOfflineMode={isOfflineMode}
+              isRelayModalOpen={isRelayModalOpen}
+              setIsRelayModalOpen={setIsRelayModalOpen}
+              isManualRefreshing={isManualRefreshing}
+              triggerManualRefresh={triggerManualRefresh}
+            />
+            <section className="filter-panel">
+              <div className="filter-panel__toggles">
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={includeReactions}
+                    onChange={() => setIncludeReactions((prev) => !prev)}
+                  />
+                  Load Reactions
+                </label>
+                <label>
+                  <input
+                    type="checkbox"
+                    checked={includeServiceRecords}
+                    onChange={() => setIncludeServiceRecords((prev) => !prev)}
+                  />
+                  Load NCC Service Records
+                </label>
+              </div>
+              <div className="filter-panel__cache">
+                <label>
+                  Local cache limit: {localCacheLimit}
+                  <input
+                    type="range"
+                    min={20}
+                    max={200}
+                    step={10}
+                    value={localCacheLimit}
+                    onChange={(event) => setLocalCacheLimit(Number(event.target.value))}
+                  />
+                </label>
+                <label>
+                  IndexedDB cache limit: {indexedDbCacheLimit}
+                  <input
+                    type="range"
+                    min={100}
+                    max={500}
+                    step={50}
+                    value={indexedDbCacheLimit}
+                    onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
+                  />
+                </label>
+              </div>
+              <div className="filter-panel__status">
+                {isLoadingMoreCache
+                  ? "Loading more cached posts…"
+                  : hasMoreCacheEvents
+                  ? "Scroll to load more cached posts"
+                  : "Cached posts exhausted"}
+              </div>
+            </section>
             <div className="post-composer-section">
               <h4>New post</h4>
               <form onSubmit={handlePublish} className="post-form sidebar-form">
@@ -2460,72 +2490,34 @@ const App = () => {
         </aside>
 
         <div className="layout-grid" data-full-global={!isSignedIn}>
-        {showFollowingColumn && (
-          <section className={`column ${activeColumn === "following" ? "active-column" : ""}`}>
-            <div className="column-header">
-              <div>
-                <h2>Recent • Following Notes</h2>
-              </div>
-            </div>
-            <div className="timeline">
-              {followingDisplay.map((event) => (
-                <PostCard key={event.id} event={event} />
-              ))}
-              {showFollowingSkeleton && renderSkeletonCards("following")}
-            {followingNotes.length > followingLimit && (
-                <button type="button" className="load-more" onClick={() => setFollowingLimit((prev) => prev + 20)}>
-                  Load more
-                </button>
-              )}
-              <div ref={followingSentinelRef} className="feed-sentinel" aria-hidden="true" />
-            </div>
-          </section>
-        )}
-
-        {showArticleColumn && (
-          <section className={`column ${activeColumn === "articles" ? "active-column" : ""}`}>
-            <div className="column-header">
-              <div>
-                <h2>Articles • Long-form</h2>
-              </div>
-              <div className="column-header-actions">
-                <button type="button" className="ghost-pill">
-                  Curated
-                </button>
-              </div>
-            </div>
-            <div className="timeline">
-              {articleDisplay.map((event) => (
-                <PostCard key={event.id} event={event} />
-              ))}
-              {showArticleSkeleton && renderSkeletonCards("articles")}
-              {articleEvents.length > articlesLimit && (
-                <button type="button" className="load-more" onClick={() => setArticlesLimit((prev) => prev + 20)}>
-                  Load more
-                </button>
-              )}
-              <div ref={articlesSentinelRef} className="feed-sentinel" aria-hidden="true" />
-            </div>
-          </section>
-        )}
-
-        {showGlobalColumn && (
-          <section
-            className={`column ${activeColumn === "global" ? "active-column" : ""}${
-              !isSignedIn ? " full-width-column" : ""
-            }`}
-          >
+          <section className="column active-column">
             <div className="column-header">
               <div>
                 <h2>All • Global Mirror</h2>
+                <div className="filter-pills" role="list">
+                  {FILTER_DEFINITIONS.map((filter) => {
+                    const isActive = activeFilters.includes(filter.id);
+                    return (
+                      <button
+                        key={filter.id}
+                        type="button"
+                        className={`filter-pill ${isActive ? "is-active" : ""}`}
+                        onClick={() => toggleFilter(filter.id)}
+                        aria-pressed={isActive}
+                      >
+                        {filter.label}
+                      </button>
+                    );
+                  })}
+                </div>
               </div>
             </div>
             <div className="timeline">
               {globalDisplay.map((event) => (
-                <PostCard key={event.id} event={event} />
+                <PostCard key={event.id} event={event} onCardClick={openFocusedEvent} />
               ))}
               {showGlobalSkeleton && renderSkeletonCards("global")}
-              {globalEvents.length > globalLimit && (
+              {filteredGlobalEvents.length > globalLimit && (
                 <button type="button" className="load-more" onClick={() => setGlobalLimit((prev) => prev + 20)}>
                   Load more
                 </button>
@@ -2533,25 +2525,46 @@ const App = () => {
               <div ref={globalSentinelRef} className="feed-sentinel" aria-hidden="true" />
             </div>
           </section>
-        )}
-        
-        {activeThreadId && (
-          <ThreadPanel
-            eventId={activeThreadId}
-            onClose={closeThread}
-            eventsById={eventsById}
-            renderAuthorPill={renderAuthorPill}
-            renderEventContent={renderEventContent}
-            renderAttachments={renderAttachments}
-            renderActions={renderActions}
-            formatAgo={formatAgo}
-            onReply={handleReply}
-            isSignedIn={isSignedIn}
-          />
-        )}
+
+          {focusedEvent && (
+            <div className="card-focus-overlay" onClick={closeFocusedEvent}>
+              <div
+                className="card-focus-modal"
+                role="dialog"
+                aria-modal="true"
+                aria-label="Focused post"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <button
+                  type="button"
+                  className="card-focus-close"
+                  onClick={closeFocusedEvent}
+                  aria-label="Close focused post"
+                >
+                  ✕
+                </button>
+                <PostCard event={focusedEvent} isFocused />
+              </div>
+            </div>
+          )}
+
+          {activeThreadId && (
+            <ThreadPanel
+              eventId={activeThreadId}
+              onClose={closeThread}
+              eventsById={eventsById}
+              renderAuthorPill={renderAuthorPill}
+              renderEventContent={renderEventContent}
+              renderAttachments={renderAttachments}
+              renderActions={renderActions}
+              formatAgo={formatAgo}
+              onReply={handleReply}
+              isSignedIn={isSignedIn}
+            />
+          )}
+        </div>
       </div>
     </div>
-  </div>
   );
 };
 
@@ -2669,9 +2682,15 @@ type MediaErrorHandler = (message?: string) => void;
 
 const LazyVideo = ({ url, onError }: LazyMediaProps) => {
   const [ref, visible] = useInView<HTMLDivElement>();
+  const [failed, setFailed] = useState(() => failedVideoCache.has(url));
+
+  useEffect(() => {
+    setFailed(failedVideoCache.has(url));
+  }, [url]);
+
   return (
     <div ref={ref} className="attachment-video">
-      {visible ? (
+      {visible && !failed ? (
         <video
           src={url}
           className="attachment-item"
@@ -2679,12 +2698,45 @@ const LazyVideo = ({ url, onError }: LazyMediaProps) => {
           preload="metadata"
           playsInline
           muted
-          onError={(event) => onError?.(describeMediaError((event.target as HTMLMediaElement)?.error ?? null))}
+          onError={(event) => {
+            const message = describeMediaError((event.target as HTMLMediaElement)?.error ?? null);
+            if (url) {
+              failedVideoCache.add(url);
+            }
+            setFailed(true);
+            onError?.(message);
+          }}
         />
       ) : (
         <div className="attachment-media-placeholder" />
       )}
     </div>
+  );
+};
+
+const AvatarImage = ({ src, alt }: { src?: string; alt?: string }) => {
+  const [failed, setFailed] = useState(() => !src || failedAvatarCache.has(src));
+
+  useEffect(() => {
+    setFailed(!src || (src ? failedAvatarCache.has(src) : true));
+  }, [src]);
+
+  if (!src || failed) {
+    return null;
+  }
+
+  return (
+    <img
+      src={src}
+      alt={alt}
+      loading="lazy"
+      onError={() => {
+        if (src) {
+          failedAvatarCache.add(src);
+        }
+        setFailed(true);
+      }}
+    />
   );
 };
 
@@ -2722,13 +2774,37 @@ const LazyPlaylistPlayer = ({ url, onError }: LazyMediaProps) => {
 };
 
 const LazyImage = ({ url, alt, className }: { url: string; alt?: string; className?: string }) => {
-  const [ref, visible] = useInView<HTMLImageElement>();
+  const [ref, visible] = useInView<HTMLDivElement>();
+  const [loaded, setLoaded] = useState(false);
+  const [failed, setFailed] = useState(() => failedImageCache.has(url));
+
+  useEffect(() => {
+    if (!url) return;
+    setLoaded(false);
+    setFailed(failedImageCache.has(url));
+  }, [url]);
+
+  const handleError = () => {
+    if (url) {
+      failedImageCache.add(url);
+    }
+    setFailed(true);
+  };
+
+  const placeholderClass = `attachment-media-placeholder ${loaded && !failed ? "is-hidden" : ""}`;
+
   return (
     <div ref={ref} className="attachment-image-container">
-      {visible ? (
-        <img src={url} alt={alt} loading="lazy" className={className} />
-      ) : (
-        <div className="attachment-media-placeholder" />
+      <div className={placeholderClass} aria-hidden="true" />
+      {visible && !failed && url && (
+        <img
+          src={url}
+          alt={alt}
+          loading="lazy"
+          className={`${className ?? ""} ${loaded ? "is-loaded" : ""}`}
+          onLoad={() => setLoaded(true)}
+          onError={handleError}
+        />
       )}
     </div>
   );

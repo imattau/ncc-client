@@ -49,7 +49,7 @@ export class UserManager {
     // Only update if the incoming profile is newer than the existing one,
     // or if the existing one has no created_at (meaning it's an old cached entry without this field)
     if (existing && existing.created_at !== undefined && metadata.created_at <= existing.created_at) {
-      return this.getProfiles(); // Do not update with older or same-timestamped data
+      return { profiles: this.getProfiles(), updated: false };
     }
 
     const updated: Profile = {
@@ -59,7 +59,7 @@ export class UserManager {
     };
     this.profileCache.set(pubkey, updated);
     this.persistProfiles();
-    return this.getProfiles();
+    return { profiles: this.getProfiles(), updated: true };
   }
 
   getFollowingList(): string[] {
