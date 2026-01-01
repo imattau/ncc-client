@@ -163,6 +163,7 @@ const buildFollowingBaseFilters = (
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
 
 const CACHE_BATCH_SIZE = 80;
+const FEED_INCREMENT = 20;
 
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
   serviceRecord: "serviceRecords",
@@ -216,6 +217,9 @@ const App = () => {
   const cacheLoadedRef = useRef(0);
   const hasMoreCacheEventsRef = useRef(true);
   const isLoadingCacheRef = useRef(false);
+  const followingSentinelRef = useRef<HTMLDivElement>(null);
+  const articlesSentinelRef = useRef<HTMLDivElement>(null);
+  const globalSentinelRef = useRef<HTMLDivElement>(null);
   const [events, setEvents] = useState<NostrEvent[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -436,6 +440,42 @@ const App = () => {
       window.removeEventListener("scroll", handleScroll);
     };
   }, [loadNextCacheBatch]);
+
+  useEffect(() => {
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (!entry.isIntersecting) return;
+          if (
+            entry.target === followingSentinelRef.current &&
+            (!isCompactView || activeColumn === "following")
+          ) {
+            setFollowingLimit((prev) =>
+              Math.min(prev + FEED_INCREMENT, indexedDbCacheLimit)
+            );
+          }
+          if (
+            entry.target === articlesSentinelRef.current &&
+            (!isCompactView || activeColumn === "articles")
+          ) {
+            setArticlesLimit((prev) =>
+              Math.min(prev + FEED_INCREMENT, indexedDbCacheLimit)
+            );
+          }
+          if (entry.target === globalSentinelRef.current) {
+            void loadNextCacheBatch();
+          }
+        });
+      },
+      { rootMargin: "200px" }
+    );
+    [followingSentinelRef, articlesSentinelRef, globalSentinelRef].forEach((ref) => {
+      if (ref.current) {
+        observer.observe(ref.current);
+      }
+    });
+    return () => observer.disconnect();
+  }, [activeColumn, isCompactView, indexedDbCacheLimit, loadNextCacheBatch]);
 
   useEffect(() => {
     let mounted = true;
@@ -2401,6 +2441,7 @@ const App = () => {
                   Load more
                 </button>
               )}
+              <div ref={followingSentinelRef} className="feed-sentinel" aria-hidden="true" />
             </div>
           </section>
         )}
@@ -2441,6 +2482,7 @@ const App = () => {
                   Load more
                 </button>
               )}
+              <div ref={articlesSentinelRef} className="feed-sentinel" aria-hidden="true" />
             </div>
           </section>
         )}
@@ -2478,6 +2520,7 @@ const App = () => {
                   Load more
                 </button>
               )}
+              <div ref={globalSentinelRef} className="feed-sentinel" aria-hidden="true" />
             </div>
           </section>
         )}
