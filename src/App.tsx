@@ -121,18 +121,20 @@ const mapNostrToolsEvent = (event: NostrToolsEvent): NostrEvent => ({
 const TWO_WEEKS_SECONDS = 14 * 24 * 60 * 60;
 const BASE_KIND_FILTERS: Filter[] = [
   { kinds: [1], limit: 60 },
-  { kinds: [30023], limit: 40 },
-  { kinds: [0], limit: 80 }
+  { kinds: [30023], limit: 40 }
 ];
 const REACTION_FILTER: Filter = { kinds: [6, 7], limit: 100 };
 const SERVICE_RECORD_FILTER: Filter = { kinds: [30058, 30059, 30060, 30061], limit: 50 };
+const NCC05_FILTER: Filter = { kinds: [30005], limit: 40 };
 const buildDefaultBaseFilters = (includeReactions: boolean, includeServiceRecords: boolean): Filter[] => {
-  const filters = [...BASE_KIND_FILTERS];
+  const filters: Filter[] = [
+    ...(includeServiceRecords ? [SERVICE_RECORD_FILTER] : []),
+    ...(includeServiceRecords ? [NCC05_FILTER] : []),
+    { kinds: [0], limit: 80 },
+    ...BASE_KIND_FILTERS
+  ];
   if (includeReactions) {
     filters.push(REACTION_FILTER);
-  }
-  if (includeServiceRecords) {
-    filters.push(SERVICE_RECORD_FILTER);
   }
   return filters;
 };
@@ -142,17 +144,19 @@ const buildFollowingBaseFilters = (
   includeReactions: boolean,
   includeServiceRecords: boolean
 ): Filter[] => {
-  const filters = buildDefaultBaseFilters(includeReactions, includeServiceRecords);
-  if (!followingAuthorsHex.length) {
-    return filters;
-  }
-  filters.push({
-    authors: followingAuthorsHex,
-    kinds: [0, 1, 30023],
-    since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
-    limit: 200
-  });
-  return filters;
+  return [
+    ...(followingAuthorsHex.length
+      ? [
+          {
+            authors: followingAuthorsHex,
+            kinds: [0, 1, 30023],
+            since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
+            limit: 200
+          }
+        ]
+      : []),
+    ...buildDefaultBaseFilters(includeReactions, includeServiceRecords)
+  ];
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
 
