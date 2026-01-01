@@ -460,6 +460,12 @@ body {
   display: inline-flex;
   align-items: center;
   gap: 0.4rem;
+  flex-wrap: wrap;
+  max-width: 100%;
+}
+
+.status-chip > * {
+  min-width: 0;
 }
 
 .pull-refresh {
