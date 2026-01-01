@@ -279,6 +279,7 @@ const App = () => {
   const relayEventCountLabel = relayEventStats
     ? `${relayEventStats.eventCount} (${relayEventStats.dropCount} dropped)`
     : "waiting…";
+  const showRateLimitAlert = Boolean(relayEventStats?.dropCount);
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
   }
@@ -1885,6 +1886,40 @@ const App = () => {
   );
 };
 
+  const PostCard = ({ event }: { event: NostrEvent }) => {
+    const replyCount = Array.from(eventsById.values()).filter(
+      (item) => item.kind === 1 && item.tags?.some((t) => t[0] === "e" && t[1] === event.id)
+    ).length;
+
+    const firstHashtag = event.tags?.find((tag) => tag[0] === "#" && tag[1])?.[1];
+
+    return (
+      <article className="timeline-card">
+        <div className="stat-pills">
+          {renderAuthorPill(event)}
+          <span className="stat-pill kind-pill">{kindLabel(event)}</span>
+          {replyCount > 0 && (
+            <span className="stat-pill badge-pill" aria-label={`${replyCount} replies`}>
+              {replyCount} replies
+            </span>
+          )}
+          {firstHashtag && <span className="stat-pill badge-pill">#{firstHashtag}</span>}
+          {event.isArticle && <span className="stat-pill badge-pill longform">Long-form</span>}
+        </div>
+        {renderEventContent(event)}
+        {renderAttachments(event.attachments)}
+        {event.kind === 1059 && renderEmbeddedEvent(event)}
+        <div className="meta">
+          <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
+          <span title={event.relays?.join(" · ") ?? "relay unknown"}>
+            {event.relays?.join(" · ") ?? "relay unknown"}
+          </span>
+        </div>
+        {renderActions(event)}
+      </article>
+    );
+  };
+
   useEffect(() => {
     const timelines = Array.from(document.querySelectorAll<HTMLDivElement>(".timeline"));
     if (!timelines.length) return undefined;
@@ -2036,6 +2071,11 @@ const App = () => {
             {isManualRefreshing ? "Refreshing..." : "Refresh"}
           </button>
         </div>
+        {showRateLimitAlert && (
+          <div className="status-alert">
+            Worker skipped {relayEventStats?.dropCount ?? 0} repeated events to protect the feed.
+          </div>
+        )}
       </header>
 
       <section className="filter-panel">
@@ -2420,20 +2460,7 @@ const App = () => {
             </div>
             <div className="timeline">
               {followingDisplay.map((event) => (
-                <article key={event.id} className="timeline-card">
-                  <div className="stat-pills">
-                    {renderAuthorPill(event)}
-                    <span className="stat-pill kind-pill">{kindLabel(event)}</span>
-                  </div>
-                  {renderEventContent(event)}
-                  {renderAttachments(event.attachments)}
-                  {event.kind === 1059 && renderEmbeddedEvent(event)}
-                  <div className="meta">
-                    <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
-                    <span title={event.relays?.[0] ?? "relay unknown"}>{event.relays?.[0] ?? "relay unknown"}</span>
-                  </div>
-                  {renderActions(event)}
-                </article>
+                <PostCard key={event.id} event={event} />
               ))}
               {showFollowingSkeleton && renderSkeletonCards("following")}
             {followingNotes.length > followingLimit && (
@@ -2460,21 +2487,7 @@ const App = () => {
             </div>
             <div className="timeline">
               {articleDisplay.map((event) => (
-                <article key={event.id} className="timeline-card">
-                  <div className="stat-pills">
-                    {renderAuthorPill(event)}
-                    <span className="stat-pill kind-pill">{kindLabel(event)}</span>
-                  </div>
-                  {renderEventContent(event)}
-                  {renderAttachments(event.attachments)}
-                  <div className="meta">
-                    <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
-                    <span title={event.relays?.join(" · ") ?? "relay unknown"}>
-                      {event.relays?.join(" · ") ?? "relay unknown"}
-                    </span>
-                  </div>
-                  {renderActions(event)}
-                </article>
+                <PostCard key={event.id} event={event} />
               ))}
               {showArticleSkeleton && renderSkeletonCards("articles")}
               {articleEvents.length > articlesLimit && (
@@ -2500,19 +2513,7 @@ const App = () => {
             </div>
             <div className="timeline">
               {globalDisplay.map((event) => (
-                <article key={event.id} className="timeline-card">
-                  <div className="stat-pills">
-                    {renderAuthorPill(event)}
-                    <span className="stat-pill kind-pill">{kindLabel(event)}</span>
-                  </div>
-                  {renderEventContent(event)}
-                  {renderAttachments(event.attachments)}
-                  <div className="meta">
-                    <span title={`Posted ${formatAgo(event.created_at)}`}>{formatAgo(event.created_at)}</span>
-                    <span title={event.relays?.[0] ?? "relay unknown"}>{event.relays?.[0] ?? "relay unknown"}</span>
-                  </div>
-                  {renderActions(event)}
-                </article>
+                <PostCard key={event.id} event={event} />
               ))}
               {showGlobalSkeleton && renderSkeletonCards("global")}
               {globalEvents.length > globalLimit && (

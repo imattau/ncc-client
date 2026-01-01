@@ -468,6 +468,15 @@ body {
   min-width: 0;
 }
 
+.status-alert {
+  margin-top: 0.4rem;
+  padding: 0.35rem 0.9rem;
+  border-radius: 0.75rem;
+  background: rgba(239, 68, 68, 0.08);
+  color: #ffa3a3;
+  font-size: 0.75rem;
+}
+
 .pull-refresh {
   display: flex;
   justify-content: center;
@@ -1244,6 +1253,16 @@ body {
   white-space: nowrap;
   text-overflow: ellipsis;
   overflow: hidden;
+}
+
+.stat-pill.badge-pill {
+  background: rgba(149, 163, 184, 0.15);
+  border-color: rgba(148, 163, 184, 0.4);
+}
+
+.stat-pill.badge-pill.longform {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: rgba(16, 185, 129, 0.35);
 }
 
 .author-pill {
