@@ -314,14 +314,25 @@ const App = () => {
     };
   }, [relayManager]);
 
-  const updateProfileMetadata = useCallback(
-    (pubkey: string, metadata: Profile) => {
-      const normalized = canonicalizePubkey(pubkey);
-      if (!normalized) return;
-      console.log("[Profile] Updating", normalized, metadata.name || metadata.display_name);
-      const nextProfiles = userManager.updateProfile(normalized, metadata);
-      setProfiles({ ...nextProfiles });
-      }, [userManager]);
+    const updateProfileMetadata = useCallback(
+
+      (pubkey: string, metadata: Omit<Profile, 'created_at'>, createdAt: number) => {
+
+        const normalized = canonicalizePubkey(pubkey);
+
+        if (!normalized) return;
+
+        console.log("[Profile] Updating", normalized, metadata.name || metadata.display_name, "(created at", createdAt, ")");
+
+        const nextProfiles = userManager.updateProfile(normalized, { ...metadata, created_at: createdAt });
+
+        setProfiles({ ...nextProfiles });
+
+      },
+
+      [userManager]
+
+    );
 
   const handleContactEvent = useCallback(
     (event: NostrEvent) => {
@@ -366,7 +377,7 @@ const App = () => {
           const metadata = JSON.parse(event.content);
           if (metadata && typeof metadata === "object") {
             console.log("[Profile] Received Kind 0 from stream", event.author);
-            updateProfileMetadata(event.author, metadata);
+            updateProfileMetadata(event.author, metadata, event.created_at);
           }
                   } catch (e) {
                     console.error("[Profile] Failed to parse Kind 0 event content", event.id, e);
@@ -1221,7 +1232,7 @@ const App = () => {
           remoteSearchCacheRef.current.profiles.add(pubkeyHex);
           const remoteProfile = await NostrService.fetchProfile(pubkeyHex, managedRelays);
           if (remoteProfile?.metadata) {
-            updateProfileMetadata(pubkeyHex, remoteProfile.metadata);
+            updateProfileMetadata(pubkeyHex, remoteProfile.metadata, remoteProfile.created_at);
           }
         }
         if (needsEvent && eventId) {
@@ -1310,11 +1321,10 @@ const App = () => {
       for (const pubkey of queue) {
         if (cancelled) break;
         try {
-          const remoteProfile = await NostrService.fetchProfile(pubkey, managedRelays);
-          if (remoteProfile?.metadata) {
-            updateProfileMetadata(pubkey, remoteProfile.metadata);
-          }
-        } finally {
+                      const remoteProfile = await NostrService.fetchProfile(pubkey, managedRelays);
+                      if (remoteProfile?.metadata) {
+                        updateProfileMetadata(pubkey, remoteProfile.metadata, remoteProfile.created_at);
+                      }        } finally {
           pendingProfileRequestsRef.current.delete(pubkey);
         }
       }
@@ -1330,7 +1340,7 @@ const App = () => {
     const syncProfile = async () => {
       const remoteProfile = await NostrService.fetchProfile(canonicalAuthPubkey, managedRelays);
       if (remoteProfile?.metadata) {
-        updateProfileMetadata(canonicalAuthPubkey, remoteProfile.metadata);
+        updateProfileMetadata(canonicalAuthPubkey, remoteProfile.metadata, remoteProfile.created_at);
       }
     };
     void syncProfile();

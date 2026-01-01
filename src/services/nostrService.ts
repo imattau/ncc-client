@@ -3,6 +3,8 @@ import type { Event as NostrToolsEvent } from "nostr-tools";
 import { DEFAULT_RELAYS } from "../config/relays";
 import { getRelayPool } from "./nccClient";
 
+import type { Profile } from "./userManager"; // Import Profile type
+
 export class NostrService {
   static parsePubkeyFromInput(value: string): string | null {
     const trimmed = value.trim();
@@ -28,7 +30,7 @@ export class NostrService {
     return /^[0-9a-f]{64}$/i.test(trimmed) ? trimmed.toLowerCase() : null;
   }
 
-  static async fetchProfile(pubkey: string, relays: string[] = DEFAULT_RELAYS) {
+  static async fetchProfile(pubkey: string, relays: string[] = DEFAULT_RELAYS): Promise<{ metadata: Omit<Profile, 'created_at'>, pubkey: string, created_at: number } | null> {
     try {
       const pool = getRelayPool();
       const filter = {
@@ -41,7 +43,8 @@ export class NostrService {
       try {
         return {
           metadata: JSON.parse(event.content),
-          pubkey: event.pubkey
+          pubkey: event.pubkey,
+          created_at: event.created_at
         };
       } catch (e) {
         console.error("[NostrService] Failed to parse profile metadata for pubkey", pubkey, e);

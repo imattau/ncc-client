@@ -7,6 +7,7 @@ export interface Profile {
   picture?: string;
   about?: string;
   nip05?: string;
+  created_at: number; // Timestamp of the Kind 0 event
 }
 
 export type ContactEventResult = {
@@ -42,11 +43,19 @@ export class UserManager {
     return this.profileCache.get(pubkey);
   }
 
-  updateProfile(pubkey: string, metadata: Profile) {
-    const existing = this.profileCache.get(pubkey) ?? {};
-    const updated = {
-      ...existing,
-      ...metadata
+  updateProfile(pubkey: string, metadata: Omit<Profile, 'created_at'> & { created_at: number }) {
+    const existing = this.profileCache.get(pubkey);
+
+    // Only update if the incoming profile is newer than the existing one,
+    // or if the existing one has no created_at (meaning it's an old cached entry without this field)
+    if (existing && existing.created_at !== undefined && metadata.created_at <= existing.created_at) {
+      return this.getProfiles(); // Do not update with older or same-timestamped data
+    }
+
+    const updated: Profile = {
+      ...existing, // Start with existing data to retain properties not in metadata (e.g., if partial update)
+      ...metadata, // Overlay new metadata
+      created_at: metadata.created_at // Ensure created_at is always from the latest event
     };
     this.profileCache.set(pubkey, updated);
     this.persistProfiles();
@@ -164,7 +173,11 @@ export class UserManager {
       if (!parsed || typeof parsed !== "object") return;
       Object.entries(parsed).forEach(([pubkey, metadata]) => {
         if (typeof pubkey !== "string" || !metadata || typeof metadata !== "object") return;
-        this.profileCache.set(pubkey, metadata as Profile);
+        const profileWithTs: Profile = {
+          ...(metadata as Omit<Profile, 'created_at'>),
+          created_at: (metadata as Profile).created_at ?? 0 // Assign 0 if created_at is missing
+        };
+        this.profileCache.set(pubkey, profileWithTs);
       });
     } catch {
       // ignore invalid cache
