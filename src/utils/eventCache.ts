@@ -3,7 +3,7 @@ import type { NostrEvent } from "../types/events";
 const DB_NAME = "ncc-client-events";
 const STORE_NAME = "events";
 const DB_VERSION = 1;
-const MAX_CACHE_SIZE = 200;
+const MAX_CACHE_SIZE = 500;
 const isBrowser = typeof window !== "undefined" && "indexedDB" in window;
 
 const openDatabase = () =>

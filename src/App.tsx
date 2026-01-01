@@ -64,7 +64,7 @@ const USER_PRIVATE_KEY = generateSecretKey();
 const USER_PUBLIC_KEY = getPublicKey(USER_PRIVATE_KEY);
 const COLUMN_FILL_TARGET = 200;
 const LOCAL_STORAGE_CACHE_LIMIT = 100;
-const INDEXED_DB_CACHE_LIMIT = 200;
+const INDEXED_DB_CACHE_LIMIT = 500;
 const CACHED_EVENTS_KEY = "ncc-client-cached-events";
 
 const SERVICE_ID = "ncc-client-demo";
