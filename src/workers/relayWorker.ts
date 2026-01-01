@@ -9,9 +9,14 @@ let currentRelays: string[] = [];
 const seenIds = new Set<string>();
 const fingerprintSet = new Set<string>();
 const scheduledTimeouts: number[] = [];
-const relayStats: Record<string, { eventCount: number }> = {};
+const relayStats: Record<string, { eventCount: number; dropCount: number }> = {};
 const THROTTLE_INTERVAL_MS = 250;
 const IMMEDIATE_SUBSCRIPTIONS = 2; // Number of subscriptions to fire immediately
+const RATE_LIMIT_WINDOW_MS = 10_000;
+const MAX_EVENTS_PER_AUTHOR = 6;
+const RATE_LIMIT_KINDS = new Set([6, 7, 30058, 30059, 30060, 30061]);
+const authorRateMap = new Map<string, { count: number; windowStart: number }>();
+const TOTAL_STATS_KEY = "total";
 
 let baseFilters: Filter[] = [
   { kinds: [1], limit: 60 },
@@ -57,6 +62,10 @@ const handleEvent = (event: NostrToolsEvent) => {
     return;
   }
 
+  if (shouldDropDueToRateLimit(event)) {
+    return;
+  }
+
   const tagsKey = event.tags?.map((tag) => tag.join(":")).join("|") ?? "";
   const fingerprint = `${event.pubkey}:${event.kind}:${event.content}:${tagsKey}`;
   if (fingerprintSet.has(fingerprint)) {
@@ -67,8 +76,8 @@ const handleEvent = (event: NostrToolsEvent) => {
     return;
   }
 
-  const totalKey = "total";
-  relayStats[totalKey] = { eventCount: (relayStats[totalKey]?.eventCount ?? 0) + 1 };
+  const stats = ensureRelayStatsEntry(TOTAL_STATS_KEY);
+  stats.eventCount += 1;
 
   fingerprintSet.add(fingerprint);
   seenIds.add(event.id);
@@ -88,6 +97,34 @@ const closeSubscriptions = () => {
 };
 
 const buildFilters = () => [...baseFilters, ...extraFilters];
+
+const ensureRelayStatsEntry = (key: string) => {
+  if (!relayStats[key]) {
+    relayStats[key] = { eventCount: 0, dropCount: 0 };
+  }
+  return relayStats[key];
+};
+
+const shouldDropDueToRateLimit = (event: NostrToolsEvent) => {
+  if (!RATE_LIMIT_KINDS.has(event.kind) || !event.pubkey) {
+    return false;
+  }
+  const now = Date.now();
+  const existing = authorRateMap.get(event.pubkey);
+  if (!existing || now - existing.windowStart > RATE_LIMIT_WINDOW_MS) {
+    authorRateMap.set(event.pubkey, { count: 1, windowStart: now });
+    return false;
+  }
+  if (existing.count >= MAX_EVENTS_PER_AUTHOR) {
+    const stats = ensureRelayStatsEntry(TOTAL_STATS_KEY);
+    stats.dropCount += 1;
+    return true;
+  }
+  existing.count += 1;
+  return false;
+};
+
+const resetAuthorRateLimit = () => authorRateMap.clear();
 
 const scheduleSubscriptions = () => {
   closeSubscriptions();
@@ -150,12 +187,14 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
       currentRelays = data.relays;
       seenIds.clear();
       fingerprintSet.clear();
+      resetAuthorRateLimit();
       scheduleSubscriptions();
       break;
     case "updateRelays":
       currentRelays = data.relays;
       seenIds.clear();
       fingerprintSet.clear();
+      resetAuthorRateLimit();
       scheduleSubscriptions();
       break;
     case "fetch":
@@ -168,12 +207,14 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
       extraFilters = data.filters ?? [];
       seenIds.clear();
       fingerprintSet.clear();
+      resetAuthorRateLimit();
       scheduleSubscriptions();
       break;
     case "updateBaseFilters":
       baseFilters = data.filters ?? [];
       seenIds.clear(); // Clear seen IDs as filters have changed significantly
       fingerprintSet.clear();
+      resetAuthorRateLimit();
       scheduleSubscriptions();
       break;
     default:

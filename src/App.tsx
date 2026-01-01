@@ -63,8 +63,8 @@ const FOLLOWING_AUTHORS = ["@alice", "@nate", "@lena"];
 const USER_PRIVATE_KEY = generateSecretKey();
 const USER_PUBLIC_KEY = getPublicKey(USER_PRIVATE_KEY);
 const COLUMN_FILL_TARGET = 200;
-const LOCAL_STORAGE_CACHE_LIMIT = 100;
-const INDEXED_DB_CACHE_LIMIT = 500;
+const LOCAL_STORAGE_CACHE_DEFAULT = 100;
+const INDEXED_DB_CACHE_DEFAULT = 500;
 const CACHED_EVENTS_KEY = "ncc-client-cached-events";
 
 const SERVICE_ID = "ncc-client-demo";
@@ -124,6 +124,47 @@ const mapNostrToolsEvent = (event: NostrToolsEvent): NostrEvent => ({
   isServiceRecord: event.kind === 30059
 });
 
+const TWO_WEEKS_SECONDS = 14 * 24 * 60 * 60;
+const BASE_KIND_FILTERS: Filter[] = [
+  { kinds: [1], limit: 60 },
+  { kinds: [30023], limit: 40 },
+  { kinds: [0], limit: 80 }
+];
+const REACTION_FILTER: Filter = { kinds: [6, 7], limit: 100 };
+const SERVICE_RECORD_FILTER: Filter = { kinds: [30058, 30059, 30060, 30061], limit: 50 };
+const buildDefaultBaseFilters = (includeReactions: boolean, includeServiceRecords: boolean): Filter[] => {
+  const filters = [...BASE_KIND_FILTERS];
+  if (includeReactions) {
+    filters.push(REACTION_FILTER);
+  }
+  if (includeServiceRecords) {
+    filters.push(SERVICE_RECORD_FILTER);
+  }
+  return filters;
+};
+const buildFollowingBaseFilters = (
+  followingAuthorsHex: string[],
+  includeReactions: boolean,
+  includeServiceRecords: boolean
+): Filter[] => {
+  const filters: Filter[] = [
+    {
+      authors: followingAuthorsHex,
+      kinds: [0, 1, 30023],
+      since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
+      limit: 200
+    }
+  ];
+  if (includeReactions) {
+    filters.push(REACTION_FILTER);
+  }
+  if (includeServiceRecords) {
+    filters.push(SERVICE_RECORD_FILTER);
+  }
+  return filters;
+};
+const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
+
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
   serviceRecord: "serviceRecords",
   locator: "locators",
@@ -147,14 +188,6 @@ const INITIAL_QR_STATE: QrState = {
   secret: null
 };
 
-const INITIAL_BASE_FILTERS: Filter[] = [
-  { kinds: [1], limit: 60 },
-  { kinds: [30023], limit: 40 },
-  { kinds: [0], limit: 80 },
-  { kinds: [6, 7], limit: 100 },
-  { kinds: [30058, 30059, 30060, 30061], limit: 50 }
-];
-
 const App = () => {
   const { connected, refresh } = useNccClient();
   const { service: discovery, status: discoveryStatus, error: discoveryError } = useNcc02Discovery(
@@ -175,6 +208,10 @@ const App = () => {
   }
   const relayManager = relayManagerRef.current;
   const [managedRelays, setManagedRelays] = useState<string[]>(() => relayManager.getRelays());
+  const [includeReactions, setIncludeReactions] = useState(true);
+  const [includeServiceRecords, setIncludeServiceRecords] = useState(true);
+  const [localCacheLimit, setLocalCacheLimit] = useState(LOCAL_STORAGE_CACHE_DEFAULT);
+  const [indexedDbCacheLimit, setIndexedDbCacheLimit] = useState(INDEXED_DB_CACHE_DEFAULT);
   const [events, setEvents] = useState<NostrEvent[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -230,8 +267,9 @@ const App = () => {
   });
   const searchManagerRef = useRef<SearchManager>();
   const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
-  const relayEventCountLabel = relayStatus
-    ? relayStatus.stats?.total?.eventCount ?? 0
+  const relayEventStats = relayStatus?.stats?.total;
+  const relayEventCountLabel = relayEventStats
+    ? `${relayEventStats.eventCount} (${relayEventStats.dropCount} dropped)`
     : "waiting…";
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
@@ -333,22 +371,22 @@ const App = () => {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      // Cache only the most recent LOCAL_STORAGE_CACHE_LIMIT events to avoid exceeding localStorage limits
+      // Cache only the most recent localCacheLimit events to avoid exceeding localStorage limits
       window.localStorage.setItem(
         CACHED_EVENTS_KEY,
-        JSON.stringify(events.slice(0, LOCAL_STORAGE_CACHE_LIMIT))
+        JSON.stringify(events.slice(0, localCacheLimit))
       );
     } catch {
       // ignore persistence failures
     }
-    void cacheEvents(events.slice(0, INDEXED_DB_CACHE_LIMIT));
-  }, [events]);
+    void cacheEvents(events.slice(0, indexedDbCacheLimit));
+  }, [events, localCacheLimit, indexedDbCacheLimit]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
     let mounted = true;
     void (async () => {
-      const cached = await readCachedEvents(INDEXED_DB_CACHE_LIMIT);
+      const cached = await readCachedEvents(indexedDbCacheLimit);
       if (!mounted || !cached.length) return;
       setEvents((prev) => {
         const existingIds = new Set(prev.map((event) => event.id));
@@ -356,13 +394,13 @@ const App = () => {
           ...cached.filter((event) => !existingIds.has(event.id)),
           ...prev
         ];
-        return merged.slice(0, INDEXED_DB_CACHE_LIMIT);
+        return merged.slice(0, indexedDbCacheLimit);
       });
     })();
     return () => {
       mounted = false;
     };
-  }, []);
+  }, [indexedDbCacheLimit]);
 
   useEffect(() => {
     let mounted = true;
@@ -974,26 +1012,16 @@ const App = () => {
   }, [followingAuthors]);
 
   const [baseFiltersToWorker, setBaseFiltersToWorker] = useState<Filter[]>(INITIAL_BASE_FILTERS);
+  const computedBaseFilters = useMemo<Filter[]>(() => {
+    if (!isSignedIn || !followingAuthorsHex.length) {
+      return buildDefaultBaseFilters(includeReactions, includeServiceRecords);
+    }
+    return buildFollowingBaseFilters(followingAuthorsHex, includeReactions, includeServiceRecords);
+  }, [isSignedIn, followingAuthorsHex, includeReactions, includeServiceRecords]);
 
   useEffect(() => {
-    if (!isSignedIn || !followingAuthorsHex.length) {
-      setBaseFiltersToWorker(INITIAL_BASE_FILTERS); // Reset to initial if not signed in or no following
-      return;
-    }
-    const twoWeeksAgo = Math.floor(Date.now() / 1000) - (14 * 24 * 60 * 60);
-    const newBaseFilters: Filter[] = [
-      {
-        authors: followingAuthorsHex,
-        kinds: [0, 1, 30023],
-        since: twoWeeksAgo,
-        limit: 200
-      },
-      // Default filters from relayWorker.ts that are not covered by feed filters for following
-      { kinds: [6, 7], limit: 100 },
-      { kinds: [30058, 30059, 30060, 30061], limit: 50 }
-    ];
-    setBaseFiltersToWorker(newBaseFilters);
-  }, [isSignedIn, followingAuthorsHex]);
+    setBaseFiltersToWorker(computedBaseFilters);
+  }, [computedBaseFilters]);
 
   const extraFiltersToWorker = useMemo(() => {
     const filters = [...authFilters];
@@ -1938,6 +1966,51 @@ const App = () => {
           </button>
         </div>
       </header>
+
+      <section className="filter-panel">
+        <div className="filter-panel__toggles">
+          <label>
+            <input
+              type="checkbox"
+              checked={includeReactions}
+              onChange={() => setIncludeReactions((prev) => !prev)}
+            />
+            Load Reactions
+          </label>
+          <label>
+            <input
+              type="checkbox"
+              checked={includeServiceRecords}
+              onChange={() => setIncludeServiceRecords((prev) => !prev)}
+            />
+            Load NCC Service Records
+          </label>
+        </div>
+        <div className="filter-panel__cache">
+          <label>
+            Local cache limit: {localCacheLimit}
+            <input
+              type="range"
+              min={20}
+              max={200}
+              step={10}
+              value={localCacheLimit}
+              onChange={(event) => setLocalCacheLimit(Number(event.target.value))}
+            />
+          </label>
+          <label>
+            IndexedDB cache limit: {indexedDbCacheLimit}
+            <input
+              type="range"
+              min={100}
+              max={500}
+              step={50}
+              value={indexedDbCacheLimit}
+              onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
+            />
+          </label>
+        </div>
+      </section>
 
       <div
         className={`pull-refresh ${pullIndicatorVisible ? "active" : ""}`}
