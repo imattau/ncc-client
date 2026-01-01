@@ -405,13 +405,14 @@ const App = () => {
       const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
       return merged.slice(0, indexedDbCacheLimit);
     });
+    setGlobalLimit((prev) => Math.min(prev + CACHE_BATCH_SIZE, indexedDbCacheLimit));
     if (batch.length < CACHE_BATCH_SIZE || cacheLoadedRef.current >= indexedDbCacheLimit) {
       hasMoreCacheEventsRef.current = false;
       setHasMoreCacheEvents(false);
     }
     isLoadingCacheRef.current = false;
     setIsLoadingMoreCache(false);
-  }, [indexedDbCacheLimit]);
+  }, [indexedDbCacheLimit, setGlobalLimit]);
 
   useEffect(() => {
     cacheLoadedRef.current = 0;
@@ -1218,14 +1219,9 @@ const App = () => {
   const articleEvents = useMemo(
     () =>
       events
-        .filter(
-          (event) =>
-            followingAuthorsHex.includes(event.author) &&
-            (event.isArticle || event.kind === 30023) &&
-            matchesActiveHashtag(event)
-        )
+        .filter((event) => (event.isArticle || event.kind === 30023) && matchesActiveHashtag(event))
         .sort((a, b) => b.created_at - a.created_at),
-    [events, followingAuthorsHex, matchesActiveHashtag]
+    [events, matchesActiveHashtag]
   );
 
   const globalEvents = useMemo(() => {
@@ -2302,7 +2298,7 @@ const App = () => {
             className={activeColumn === "articles" ? "active" : ""}
             onClick={() => setActiveColumn("articles")}
           >
-            Articles
+            Articles (long form)
           </button>
           <button
             type="button"
