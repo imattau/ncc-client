@@ -61,7 +61,7 @@ const pruneOldEvents = async (db: IDBDatabase, keep = MAX_CACHE_SIZE) => {
   });
 };
 
-export const readCachedEvents = async (limit = 100): Promise<NostrEvent[]> => {
+export const readCachedEvents = async (limit = 100, skip = 0): Promise<NostrEvent[]> => {
   if (!isBrowser) return [];
   try {
     const db = await openDatabase();
@@ -70,10 +70,20 @@ export const readCachedEvents = async (limit = 100): Promise<NostrEvent[]> => {
       const store = tx.objectStore(STORE_NAME);
       const index = store.index("created_at");
       const events: NostrEvent[] = [];
+      let skipped = 0;
       const cursorRequest = index.openCursor(null, "prev");
       cursorRequest.onsuccess = () => {
         const cursor = cursorRequest.result;
-        if (cursor && events.length < limit) {
+        if (!cursor) {
+          resolve(events);
+          return;
+        }
+        if (skipped < skip) {
+          skipped += 1;
+          cursor.continue();
+          return;
+        }
+        if (events.length < limit) {
           events.push(cursor.value as NostrEvent);
           cursor.continue();
           return;

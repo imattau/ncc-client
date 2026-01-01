@@ -162,6 +162,8 @@ const buildFollowingBaseFilters = (
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
 
+const CACHE_BATCH_SIZE = 80;
+
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
   serviceRecord: "serviceRecords",
   locator: "locators",
@@ -209,6 +211,11 @@ const App = () => {
   const [includeServiceRecords, setIncludeServiceRecords] = useState(true);
   const [localCacheLimit, setLocalCacheLimit] = useState(LOCAL_STORAGE_CACHE_DEFAULT);
   const [indexedDbCacheLimit, setIndexedDbCacheLimit] = useState(INDEXED_DB_CACHE_DEFAULT);
+  const [isLoadingMoreCache, setIsLoadingMoreCache] = useState(false);
+  const [hasMoreCacheEvents, setHasMoreCacheEvents] = useState(true);
+  const cacheLoadedRef = useRef(0);
+  const hasMoreCacheEventsRef = useRef(true);
+  const isLoadingCacheRef = useRef(false);
   const [events, setEvents] = useState<NostrEvent[]>(() => {
     if (typeof window === "undefined") return [];
     try {
@@ -379,25 +386,55 @@ const App = () => {
     void cacheEvents(events.slice(0, indexedDbCacheLimit));
   }, [events, localCacheLimit, indexedDbCacheLimit]);
 
+  const loadNextCacheBatch = useCallback(async () => {
+    if (typeof window === "undefined") return;
+    if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
+    if (cacheLoadedRef.current >= indexedDbCacheLimit) {
+      hasMoreCacheEventsRef.current = false;
+      setHasMoreCacheEvents(false);
+      return;
+    }
+    isLoadingCacheRef.current = true;
+    setIsLoadingMoreCache(true);
+    const batch = await readCachedEvents(CACHE_BATCH_SIZE, cacheLoadedRef.current);
+    cacheLoadedRef.current += batch.length;
+    setEvents((prev) => {
+      const pool = new Map<string, NostrEvent>();
+      prev.forEach((event) => pool.set(event.id, event));
+      batch.forEach((event) => pool.set(event.id, event));
+      const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
+      return merged.slice(0, indexedDbCacheLimit);
+    });
+    if (batch.length < CACHE_BATCH_SIZE || cacheLoadedRef.current >= indexedDbCacheLimit) {
+      hasMoreCacheEventsRef.current = false;
+      setHasMoreCacheEvents(false);
+    }
+    isLoadingCacheRef.current = false;
+    setIsLoadingMoreCache(false);
+  }, [indexedDbCacheLimit]);
+
+  useEffect(() => {
+    cacheLoadedRef.current = 0;
+    hasMoreCacheEventsRef.current = true;
+    setHasMoreCacheEvents(true);
+    setEvents((prev) => prev.slice(0, indexedDbCacheLimit));
+    void loadNextCacheBatch();
+  }, [loadNextCacheBatch, indexedDbCacheLimit]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
-    let mounted = true;
-    void (async () => {
-      const cached = await readCachedEvents(indexedDbCacheLimit);
-      if (!mounted || !cached.length) return;
-      setEvents((prev) => {
-        const existingIds = new Set(prev.map((event) => event.id));
-        const merged = [
-          ...cached.filter((event) => !existingIds.has(event.id)),
-          ...prev
-        ];
-        return merged.slice(0, indexedDbCacheLimit);
-      });
-    })();
-    return () => {
-      mounted = false;
+    const threshold = 200;
+    const handleScroll = () => {
+      if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
+      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - threshold) {
+        void loadNextCacheBatch();
+      }
     };
-  }, [indexedDbCacheLimit]);
+    window.addEventListener("scroll", handleScroll, { passive: true });
+    return () => {
+      window.removeEventListener("scroll", handleScroll);
+    };
+  }, [loadNextCacheBatch]);
 
   useEffect(() => {
     let mounted = true;
@@ -2007,6 +2044,13 @@ const App = () => {
               onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
             />
           </label>
+        </div>
+        <div className="filter-panel__status">
+          {isLoadingMoreCache
+            ? "Loading more cached posts…"
+            : hasMoreCacheEvents
+            ? "Scroll to load more cached posts"
+            : "Cached posts exhausted"}
         </div>
       </section>
 
