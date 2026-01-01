@@ -191,6 +191,7 @@ const App = () => {
   const [qrState, setQrState] = useState<QrState>(INITIAL_QR_STATE);
   const signerRef = useRef<BunkerSigner | null>(null);
   const [activeHashtag, setActiveHashtag] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [userFollowing, setUserFollowing] = useState<string[]>(() => userManager.getFollowingList());
   const [userFollowers, setUserFollowers] = useState<string[]>(() => userManager.getFollowersList());
   const [isRelayModalOpen, setIsRelayModalOpen] = useState(false);
@@ -317,11 +318,10 @@ const App = () => {
     (pubkey: string, metadata: Profile) => {
       const normalized = canonicalizePubkey(pubkey);
       if (!normalized) return;
+      console.log("[Profile] Updating", normalized, metadata.name || metadata.display_name);
       const nextProfiles = userManager.updateProfile(normalized, metadata);
-      setProfiles(nextProfiles);
-    },
-    [userManager]
-  );
+      setProfiles({ ...nextProfiles });
+      }, [userManager]);
 
   const handleContactEvent = useCallback(
     (event: NostrEvent) => {
@@ -365,12 +365,12 @@ const App = () => {
         try {
           const metadata = JSON.parse(event.content);
           if (metadata && typeof metadata === "object") {
+            console.log("[Profile] Received Kind 0 from stream", event.author);
             updateProfileMetadata(event.author, metadata);
           }
-        } catch {
-          // ignore
-        }
-        return;
+                  } catch (e) {
+                    console.error("[Profile] Failed to parse Kind 0 event content", event.id, e);
+                  }        return;
       }
 
       if (event.kind === 3 && handleContactEvent(event)) {
@@ -516,6 +516,48 @@ const App = () => {
       setRelayMessage({ type: "error", text: `Failed to publish: ${(error as Error).message}` });
     }
   }, [authSession, relayManager]);
+
+  const handleReply = useCallback(async (parentId: string, content: string) => {
+    if (!content.trim() || !authSession) return;
+
+    const parent = eventsById.get(parentId);
+    if (!parent) return;
+
+    const rootId = getRootId(parent) || parent.id;
+    const tags = [
+      ["e", rootId, "", "root"],
+      ["p", parent.author]
+    ];
+    
+    if (rootId !== parent.id) {
+      tags.push(["e", parent.id, "", "reply"]);
+    }
+
+    try {
+      const baseEvent = {
+        kind: 1,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content
+      };
+
+      let signed: NostrToolsEvent;
+      if (authSession.method === "nsec" && authSession.details?.secretHex) {
+        signed = finalizeEvent(baseEvent, authManager.hexToBytes(authSession.details.secretHex));
+      } else if (signerRef.current) {
+        signed = await signerRef.current.signEvent(baseEvent);
+      } else if (window.nostr?.signEvent) {
+        signed = (await window.nostr.signEvent(baseEvent)) as NostrToolsEvent;
+      } else {
+        throw new Error("No signer available");
+      }
+
+      await publishEvent(signed);
+      handleWorkerEvent(mapNToolEvent(signed));
+    } catch (err) {
+      console.error("Reply failed", err);
+    }
+  }, [authSession, eventsById]);
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -867,7 +909,54 @@ const App = () => {
     ];
   }, [isSignedIn, followingAuthorsHex]);
 
-  const combinedFilters = useMemo(() => [...authFilters, ...feedFilters], [authFilters, feedFilters]);
+  const combinedFilters = useMemo(() => {
+    const filters = [...authFilters, ...feedFilters];
+    if (activeThreadId) {
+      filters.push({
+        kinds: [1],
+        "#e": [activeThreadId],
+        limit: 50
+      });
+    }
+    return filters;
+  }, [authFilters, feedFilters, activeThreadId]);
+
+  const openThread = useCallback((eventId: string) => {
+    setActiveThreadId(eventId);
+    // Proactively fetch the event and its replies
+    NostrService.fetchEvent(eventId).then((event) => {
+      if (event) {
+        handleWorkerEvent(mapNToolEvent(event));
+      }
+    });
+  }, []);
+
+  const closeThread = () => setActiveThreadId(null);
+
+  const getParentId = (event: NostrEvent) => {
+    // Find the 'reply' e tag or just the first one
+    const eTags = event.tags?.filter((t) => t[0] === "e") || [];
+    const replyTag = eTags.find((t) => t[3] === "reply") || eTags[eTags.length - 1];
+    return replyTag?.[1];
+  };
+
+  const getRootId = (event: NostrEvent) => {
+    const eTags = event.tags?.filter((t) => t[0] === "e") || [];
+    const rootTag = eTags.find((t) => t[3] === "root") || eTags[0];
+    return rootTag?.[1];
+  };
+
+  const mapNToolEvent = (e: NostrToolsEvent): NostrEvent => ({
+    id: e.id,
+    kind: e.kind,
+    author: e.pubkey,
+    content: e.content,
+    created_at: e.created_at * 1000,
+    tags: e.tags,
+    relays: [],
+    isArticle: e.kind === 30023,
+    isServiceRecord: e.kind === 30059
+  });
 
   const { fetchEvent: requestReferencedEvent } = useRelayWorker(
     managedRelays,
@@ -1264,18 +1353,31 @@ const App = () => {
     const profile = profiles[normalizedAuthor];
     const displayName = getAuthorLabel(event.author);
     const initials = normalizedAuthor.charAt(0).toUpperCase();
+    const parentId = getParentId(event);
+    const parentEvent = parentId ? eventsById.get(parentId) : null;
+
+    if (profile) {
+      console.debug("[Profile] Found for render", normalizedAuthor, profile.picture ? "has picture" : "no picture");
+    }
 
     return (
-      <span className="author-pill" title={`${displayName} (${event.author})`}>
-        <span className="author-avatar">
-          {profile?.picture ? (
-            <img src={profile.picture} alt={displayName} loading="lazy" />
-          ) : (
-            <span>{initials}</span>
-          )}
+      <div className="author-row">
+        <span className="author-pill" title={`${displayName} (${event.author})`}>
+          <span className="author-avatar">
+            {profile?.picture ? (
+              <img src={profile.picture} alt={displayName} loading="lazy" />
+            ) : (
+              <span>{initials}</span>
+            )}
+          </span>
+          <span className="author-name">{displayName}</span>
         </span>
-        <span className="author-name">{displayName}</span>
-      </span>
+        {parentEvent && (
+          <span className="reply-badge" onClick={(e) => { e.stopPropagation(); openThread(parentId!); }}>
+            Replying to {getAuthorLabel(parentEvent.author)}
+          </span>
+        )}
+      </div>
     );
   };
 
@@ -1543,6 +1645,10 @@ const App = () => {
     const isReposted = repostedEvents.includes(event.id);
     const totalLikes = (event.likes ?? 0) + (isLiked ? 1 : 0);
     const totalReposts = (event.reposts ?? 0) + (isReposted ? 1 : 0);
+    
+    const commentCount = Array.from(eventsById.values()).filter(
+      (e) => e.kind === 1 && e.tags?.some((t) => t[0] === "e" && t[1] === event.id)
+    ).length;
 
     return (
       <div className="actions">
@@ -1567,6 +1673,16 @@ const App = () => {
             <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
           </svg>
           <span>{totalReposts > 0 ? totalReposts : ""}</span>
+        </button>
+        <button
+          type="button"
+          onClick={() => openThread(event.id)}
+          title="Comments"
+        >
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M12 20.25c4.97 0 9-3.694 9-8.25s-4.03-8.25-9-8.25S3 7.444 3 12c0 2.104.859 4.023 2.273 5.48.432.447.74 1.04.586 1.641a4.483 4.483 0 01-.923 1.785c-.442.483.037 1.08.63.843a12.903 12.903 0 002.232-.971c.555-.299 1.207-.199 1.71.169a10.703 10.703 0 001.582.802z" />
+          </svg>
+          <span>{commentCount > 0 ? commentCount : ""}</span>
         </button>
         <button type="button" onClick={() => handleShare(event)} title="Share">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -2163,9 +2279,127 @@ const App = () => {
             </div>
           </section>
         )}
+        
+        {activeThreadId && (
+          <ThreadPanel
+            eventId={activeThreadId}
+            onClose={closeThread}
+            eventsById={eventsById}
+            renderAuthorPill={renderAuthorPill}
+            renderEventContent={renderEventContent}
+            renderAttachments={renderAttachments}
+            renderActions={renderActions}
+            formatAgo={formatAgo}
+            onReply={handleReply}
+            isSignedIn={isSignedIn}
+          />
+        )}
       </div>
     </div>
   </div>
+  );
+};
+
+const ThreadPanel = ({
+  eventId,
+  onClose,
+  eventsById,
+  renderAuthorPill,
+  renderEventContent,
+  renderAttachments,
+  renderActions,
+  formatAgo,
+  onReply,
+  isSignedIn
+}: {
+  eventId: string;
+  onClose: () => void;
+  eventsById: Map<string, NostrEvent>;
+  renderAuthorPill: (e: NostrEvent) => JSX.Element;
+  renderEventContent: (e: NostrEvent) => JSX.Element;
+  renderAttachments: (a?: Attachment[]) => JSX.Element | null;
+  renderActions: (e: NostrEvent) => JSX.Element;
+  formatAgo: (t: number) => string;
+  onReply: (parentId: string, content: string) => Promise<void>;
+  isSignedIn: boolean;
+}) => {
+  const [replyContent, setReplyContent] = useState("");
+  const rootEvent = eventsById.get(eventId);
+  
+  const replies = useMemo(() => {
+    return Array.from(eventsById.values())
+      .filter((e) => e.tags?.some((t) => t[0] === "e" && t[1] === eventId))
+      .sort((a, b) => a.created_at - b.created_at);
+  }, [eventsById, eventId]);
+
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!replyContent.trim()) return;
+    await onReply(eventId, replyContent);
+    setReplyContent("");
+  };
+
+  return (
+    <aside className="thread-panel">
+      <header className="thread-header">
+        <h3>Conversation</h3>
+        <button type="button" className="close-thread" onClick={onClose}>✕</button>
+      </header>
+      <div className="thread-content">
+        {!rootEvent ? (
+          <div className="thread-loading">Loading post...</div>
+        ) : (
+          <>
+            <article className="thread-root-card">
+              <div className="stat-pills">
+                {renderAuthorPill(rootEvent)}
+              </div>
+              {renderEventContent(rootEvent)}
+              {renderAttachments(rootEvent.attachments)}
+              <div className="meta">
+                <span>{formatAgo(rootEvent.created_at)}</span>
+              </div>
+              {renderActions(rootEvent)}
+            </article>
+
+            <div className="replies-section">
+              <h4>Replies</h4>
+              {replies.length === 0 ? (
+                <p className="no-replies">No replies yet.</p>
+              ) : (
+                <div className="replies-list">
+                  {replies.map((reply) => (
+                    <article key={reply.id} className="reply-card">
+                      <div className="stat-pills">
+                        {renderAuthorPill(reply)}
+                      </div>
+                      {renderEventContent(reply)}
+                      {renderAttachments(reply.attachments)}
+                      <div className="meta">
+                        <span>{formatAgo(reply.created_at)}</span>
+                      </div>
+                      {renderActions(reply)}
+                    </article>
+                  ))}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+      {isSignedIn && (
+        <footer className="thread-footer">
+          <form onSubmit={handleSubmit} className="reply-form">
+            <textarea
+              placeholder="Write a reply..."
+              value={replyContent}
+              onChange={(e) => setReplyContent(e.target.value)}
+            />
+            <button type="submit" disabled={!replyContent.trim()}>Reply</button>
+          </form>
+        </footer>
+      )}
+    </aside>
   );
 };
 

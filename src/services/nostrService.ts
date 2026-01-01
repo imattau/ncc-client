@@ -43,10 +43,12 @@ export class NostrService {
           metadata: JSON.parse(event.content),
           pubkey: event.pubkey
         };
-      } catch {
+      } catch (e) {
+        console.error("[NostrService] Failed to parse profile metadata for pubkey", pubkey, e);
         return null;
       }
-    } catch {
+    } catch (e) {
+      console.error("[NostrService] Failed to fetch profile for pubkey", pubkey, e);
       return null;
     }
   }
