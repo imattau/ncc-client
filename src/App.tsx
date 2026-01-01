@@ -142,25 +142,22 @@ const buildDefaultBaseFilters = (includeReactions: boolean, includeServiceRecord
   }
   return filters;
 };
+// Helper ensures public filters remain active for the global feed, even when signed in.
 const buildFollowingBaseFilters = (
   followingAuthorsHex: string[],
   includeReactions: boolean,
   includeServiceRecords: boolean
 ): Filter[] => {
-  const filters: Filter[] = [
-    {
-      authors: followingAuthorsHex,
-      kinds: [0, 1, 30023],
-      since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
-      limit: 200
-    }
-  ];
-  if (includeReactions) {
-    filters.push(REACTION_FILTER);
+  const filters = buildDefaultBaseFilters(includeReactions, includeServiceRecords);
+  if (!followingAuthorsHex.length) {
+    return filters;
   }
-  if (includeServiceRecords) {
-    filters.push(SERVICE_RECORD_FILTER);
-  }
+  filters.push({
+    authors: followingAuthorsHex,
+    kinds: [0, 1, 30023],
+    since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
+    limit: 200
+  });
   return filters;
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
@@ -1013,6 +1010,7 @@ const App = () => {
 
   const [baseFiltersToWorker, setBaseFiltersToWorker] = useState<Filter[]>(INITIAL_BASE_FILTERS);
   const computedBaseFilters = useMemo<Filter[]>(() => {
+    // Keep the global filter coverage in place (public kinds) and append following-specific filters when signed in.
     if (!isSignedIn || !followingAuthorsHex.length) {
       return buildDefaultBaseFilters(includeReactions, includeServiceRecords);
     }
