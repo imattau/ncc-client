@@ -562,25 +562,6 @@ const App = () => {
   }, [processScroll]);
 
   useEffect(() => {
-    const observer = new IntersectionObserver(
-      (entries) => {
-        entries.forEach((entry) => {
-          if (!entry.isIntersecting) return;
-          if (entry.target === globalSentinelRef.current) {
-            void loadNextCacheBatch();
-          }
-        });
-      },
-      { rootMargin: "200px" }
-    );
-    const target = globalSentinelRef.current;
-    if (target) {
-      observer.observe(target);
-    }
-    return () => observer.disconnect();
-  }, [indexedDbCacheLimit, loadNextCacheBatch]);
-
-  useEffect(() => {
     if (relayStatus?.connected === false) {
       if (!isOfflineMode) {
         setIsOfflineMode(true);
