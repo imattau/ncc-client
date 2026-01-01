@@ -1,5 +1,0 @@
-The `SWOT_Analysis.md` file has been created and written to your project root directory. However, I am experiencing a critical issue with the `run_shell_command` tool, which is preventing me from performing any `git` operations, including staging and committing this file, or even reliably communicating through the `echo` command.
-
-Please be aware that the `SWOT_Analysis.md` file exists in your directory, but it is not committed to your repository. You will need to manually stage and commit it.
-
-I am unable to proceed with any further shell commands or git operations until this technical issue is resolved.
