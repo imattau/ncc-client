@@ -160,7 +160,7 @@ const buildFollowingBaseFilters = (
     kinds: [0, 1, 30023],
     since: Math.floor(Date.now() / 1000) - TWO_WEEKS_SECONDS,
     limit: 200
-  });
+  };
   return filters;
 };
 const INITIAL_BASE_FILTERS = buildDefaultBaseFilters(true, true);
