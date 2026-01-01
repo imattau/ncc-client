@@ -1,10 +1,10 @@
 import { SimplePool, type Filter, type Event as NostrToolsEvent } from "nostr-tools";
+import { normalizeURL } from "nostr-tools/utils";
 import { RelayWorkerRequest } from "./relayWorker.types";
 import type { NostrEvent } from "../types/events";
 import { isNccDiscoveryKind } from "../utils/nccDiscovery";
 
-const pool = new SimplePool();
-let subscriptions: ReturnType<typeof pool.subscribe>[] = [];
+let subscriptions: ReturnType<SimplePool["subscribe"]>[] = [];
 let currentRelays: string[] = [];
 const seenIds = new Set<string>();
 const fingerprintSet = new Set<string>();
@@ -17,6 +17,77 @@ const MAX_EVENTS_PER_AUTHOR = 6;
 const RATE_LIMIT_KINDS = new Set([6, 7, 30058, 30059, 30060, 30061]);
 const authorRateMap = new Map<string, { count: number; windowStart: number }>();
 const TOTAL_STATS_KEY = "total";
+
+let adaptiveThrottleMs = THROTTLE_INTERVAL_MS;
+let lastScheduleStart = 0;
+let eventSeenSinceSchedule = false;
+
+const RELAY_URL_REGEX = /(wss?:\/\/[^\s'"]+)/i;
+const RELAY_COOLDOWN_BASE_MS = 30_000;
+const RELAY_COOLDOWN_CAP_MS = 5 * 60_000;
+
+const relayFailureCounts: Record<string, number> = {};
+const relayCooldownUntil: Record<string, number> = {};
+
+let cooldownRetryTimer: number | null = null;
+
+const normalizeRelayKey = (relay: string) => {
+  try {
+    return normalizeURL(relay);
+  } catch {
+    return relay.trim();
+  }
+};
+
+const getRelayCooldownKey = (relay: string) => {
+  const normalized = normalizeRelayKey(relay);
+  return normalized || relay;
+};
+
+const getEligibleRelays = () => {
+  const now = Date.now();
+  return currentRelays.filter((relay) => {
+    const key = getRelayCooldownKey(relay);
+    const until = relayCooldownUntil[key];
+    return !until || until <= now;
+  });
+};
+
+const getNextCooldownExpiry = () => {
+  const now = Date.now();
+  let earliest: number | null = null;
+  for (const relay of currentRelays) {
+    const key = getRelayCooldownKey(relay);
+    const until = relayCooldownUntil[key];
+    if (until && until > now && (earliest === null || until < earliest)) {
+      earliest = until;
+    }
+  }
+  return earliest;
+};
+
+const recordRelayFailure = (relay: string | null) => {
+  if (!relay) return;
+  const normalized = normalizeRelayKey(relay);
+  if (!normalized) return;
+  const count = (relayFailureCounts[normalized] ?? 0) + 1;
+  relayFailureCounts[normalized] = count;
+  const cooldown = Math.min(RELAY_COOLDOWN_BASE_MS * count, RELAY_COOLDOWN_CAP_MS);
+  relayCooldownUntil[normalized] = Date.now() + cooldown;
+};
+
+class RelayTrackingPool extends SimplePool {
+  async ensureRelay(url: string, params?: { connectionTimeout?: number }) {
+    try {
+      return await super.ensureRelay(url, params);
+    } catch (error) {
+      recordRelayFailure(url);
+      throw error;
+    }
+  }
+}
+
+const pool = new RelayTrackingPool();
 
 let baseFilters: Filter[] = [
   { kinds: [1], limit: 60 },
@@ -51,6 +122,7 @@ const dispatchEvent = (mapped: NostrEvent) => {
 };
 
 const handleEvent = (event: NostrToolsEvent) => {
+  recordSubscriptionLatency();
   if (event.kind === 5) {
     handleDeletion(event);
     return;
@@ -94,6 +166,10 @@ const closeSubscriptions = () => {
   subscriptions = [];
   scheduledTimeouts.forEach((timeout) => clearTimeout(timeout));
   scheduledTimeouts.length = 0;
+  if (cooldownRetryTimer) {
+    clearTimeout(cooldownRetryTimer);
+    cooldownRetryTimer = null;
+  }
 };
 
 const buildFilters = () => [...baseFilters, ...extraFilters];
@@ -103,6 +179,33 @@ const ensureRelayStatsEntry = (key: string) => {
     relayStats[key] = { eventCount: 0, dropCount: 0 };
   }
   return relayStats[key];
+};
+
+const isRelaySleeping = (relay: string) => {
+  const key = getRelayCooldownKey(relay);
+  const until = relayCooldownUntil[key];
+  return Boolean(until && until > Date.now());
+};
+
+const getSleepingRelays = () => currentRelays.filter(isRelaySleeping);
+
+const extractRelayFromError = (error: unknown) => {
+  const text =
+    typeof error === "string"
+      ? error
+      : error && typeof error === "object" && "message" in error
+      ? (error as { message?: string }).message ?? ""
+      : "";
+  const matches = text.match(RELAY_URL_REGEX);
+  return matches?.[0] ?? null;
+};
+
+const recordSubscriptionLatency = () => {
+  if (eventSeenSinceSchedule || !lastScheduleStart) return;
+  const latency = Date.now() - lastScheduleStart;
+  const blended = Math.round(adaptiveThrottleMs * 0.7 + latency * 0.3);
+  adaptiveThrottleMs = Math.max(80, Math.min(600, blended));
+  eventSeenSinceSchedule = true;
 };
 
 const shouldDropDueToRateLimit = (event: NostrToolsEvent) => {
@@ -128,27 +231,46 @@ const resetAuthorRateLimit = () => authorRateMap.clear();
 
 const scheduleSubscriptions = () => {
   closeSubscriptions();
+  if (cooldownRetryTimer) {
+    clearTimeout(cooldownRetryTimer);
+    cooldownRetryTimer = null;
+  }
   if (!currentRelays.length) {
-    postStatus(false);
+    postStatus(false, []);
     return;
   }
-  postStatus(true);
+
+  const sleepingRelays = getSleepingRelays();
+  const eligibleRelays = getEligibleRelays();
+  if (!eligibleRelays.length) {
+    const nextExpiry = getNextCooldownExpiry();
+    const delay = nextExpiry ? Math.max(nextExpiry - Date.now(), 500) : RELAY_COOLDOWN_BASE_MS;
+    cooldownRetryTimer = self.setTimeout(scheduleSubscriptions, delay);
+    postStatus(false, sleepingRelays);
+    return;
+  }
+
+  postStatus(true, sleepingRelays);
+  lastScheduleStart = Date.now();
+  eventSeenSinceSchedule = false;
   const filtersToUse = buildFilters();
+  const throttleMs = Math.max(80, Math.min(600, Math.round(adaptiveThrottleMs)));
   filtersToUse.forEach((filter, index) => {
     // Calculate delay: first IMMEDIATE_SUBSCRIPTIONS are 0ms, then throttled
-    const delay = index < IMMEDIATE_SUBSCRIPTIONS ? 0 : (index - IMMEDIATE_SUBSCRIPTIONS + 1) * THROTTLE_INTERVAL_MS;
+    const delay =
+      index < IMMEDIATE_SUBSCRIPTIONS ? 0 : (index - IMMEDIATE_SUBSCRIPTIONS + 1) * throttleMs;
     const timeout = self.setTimeout(() => {
       try {
-        const sub = pool.subscribe(currentRelays, filter, {
+        const sub = pool.subscribe(eligibleRelays, filter, {
           onevent: (event) => {
-            // Track per-relay stats if possible. Some versions of SimplePool provide a second argument.
-            // Even if not directly provided in the signature, we can try to infer or at least track total.
             handleEvent(event);
           }
         });
         subscriptions.push(sub);
       } catch (err) {
         console.error("[RelayWorker] Subscribe error", err);
+        const failedRelay = extractRelayFromError(err);
+        recordRelayFailure(failedRelay);
       }
     }, delay);
     scheduledTimeouts.push(timeout);
@@ -156,9 +278,11 @@ const scheduleSubscriptions = () => {
 };
 
 const fetchEvent = (id: string) => {
-  if (!id || !currentRelays.length) return;
+  if (!id) return;
   const filter: Filter = { ids: [id], limit: 1 };
-  const sub = pool.subscribe(currentRelays, filter, {
+  const eligibleRelays = getEligibleRelays();
+  if (!eligibleRelays.length) return;
+  const sub = pool.subscribe(eligibleRelays, filter, {
     onevent: (event) => {
       if (event.id !== id) return;
       const mapped = mapEvent(event);
@@ -169,15 +293,22 @@ const fetchEvent = (id: string) => {
   setTimeout(() => sub.close(), 10000);
 };
 
-const postStatus = (connected: boolean) => {
-  postMessage({ type: "status", relays: currentRelays, connected, stats: relayStats });
+const postStatus = (connected: boolean, sleepingRelays: string[]) => {
+  postMessage({
+    type: "status",
+    relays: currentRelays,
+    connected,
+    stats: relayStats,
+    sleepingRelays
+  });
 };
 
 // Periodic status updates with stats
 self.setInterval(() => {
-  if (currentRelays.length > 0) {
-    postStatus(true);
-  }
+  if (!currentRelays.length) return;
+  const sleepingRelays = getSleepingRelays();
+  const eligibleRelays = getEligibleRelays();
+  postStatus(Boolean(eligibleRelays.length), sleepingRelays);
 }, 5000);
 
 self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
@@ -217,7 +348,5 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
       resetAuthorRateLimit();
       scheduleSubscriptions();
       break;
-    default:
-      postMessage({ type: "error", message: `Unknown worker command: ${data.type}` });
     }
   });

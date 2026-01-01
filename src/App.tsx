@@ -276,6 +276,21 @@ const App = () => {
   });
   const searchManagerRef = useRef<SearchManager>();
   const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
+  const [isOfflineMode, setIsOfflineMode] = useState(false);
+  const MEDIA_BLOCK_KEY = "ncc-blocked-media-hosts";
+  const [blockedMediaHosts, setBlockedMediaHosts] = useState<Set<string>>(() => {
+    if (typeof window === "undefined") return new Set();
+    try {
+      const stored = window.localStorage.getItem(MEDIA_BLOCK_KEY);
+      if (!stored) return new Set();
+      const parsed = JSON.parse(stored);
+      if (!Array.isArray(parsed)) return new Set();
+      return new Set(parsed.filter((item) => typeof item === "string"));
+    } catch {
+      return new Set();
+    }
+  });
+  const blockedMediaHostsRef = useRef<Set<string>>(blockedMediaHosts);
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
   }
@@ -473,6 +488,19 @@ const App = () => {
     });
     return () => observer.disconnect();
   }, [activeColumn, isCompactView, indexedDbCacheLimit, loadNextCacheBatch]);
+
+  useEffect(() => {
+    if (relayStatus?.connected === false) {
+      setIsOfflineMode(true);
+      if (!events.length) {
+        void loadNextCacheBatch();
+      }
+      return;
+    }
+    if (isOfflineMode) {
+      setIsOfflineMode(false);
+    }
+  }, [relayStatus?.connected, events.length, isOfflineMode, loadNextCacheBatch]);
 
   useEffect(() => {
     let mounted = true;
@@ -2048,68 +2076,7 @@ const App = () => {
             <span className="sr-only">Open search</span>
           </button>
         </div>
-        <StatusBar
-          connected={connected}
-          managedRelays={managedRelays}
-          relayStatus={relayStatus}
-          isRelayModalOpen={isRelayModalOpen}
-          setIsRelayModalOpen={setIsRelayModalOpen}
-          isManualRefreshing={isManualRefreshing}
-          triggerManualRefresh={triggerManualRefresh}
-        />
       </header>
-
-      <section className="filter-panel">
-        <div className="filter-panel__toggles">
-          <label>
-            <input
-              type="checkbox"
-              checked={includeReactions}
-              onChange={() => setIncludeReactions((prev) => !prev)}
-            />
-            Load Reactions
-          </label>
-          <label>
-            <input
-              type="checkbox"
-              checked={includeServiceRecords}
-              onChange={() => setIncludeServiceRecords((prev) => !prev)}
-            />
-            Load NCC Service Records
-          </label>
-        </div>
-        <div className="filter-panel__cache">
-          <label>
-            Local cache limit: {localCacheLimit}
-            <input
-              type="range"
-              min={20}
-              max={200}
-              step={10}
-              value={localCacheLimit}
-              onChange={(event) => setLocalCacheLimit(Number(event.target.value))}
-            />
-          </label>
-          <label>
-            IndexedDB cache limit: {indexedDbCacheLimit}
-            <input
-              type="range"
-              min={100}
-              max={500}
-              step={50}
-              value={indexedDbCacheLimit}
-              onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
-            />
-          </label>
-        </div>
-        <div className="filter-panel__status">
-          {isLoadingMoreCache
-            ? "Loading more cached posts…"
-            : hasMoreCacheEvents
-            ? "Scroll to load more cached posts"
-            : "Cached posts exhausted"}
-        </div>
-      </section>
 
       <div
         className={`pull-refresh ${pullIndicatorVisible ? "active" : ""}`}
@@ -2374,13 +2341,74 @@ const App = () => {
       <div className="app-main-layout">
         {isDrawerOpen && <div className="sidebar-overlay" onClick={() => setIsDrawerOpen(false)} />}
         <aside className={`sidebar ${isDrawerOpen ? "open" : ""}`}>
-          <div className="sidebar-content">
-            <div className="sidebar-header">
-              <h3>Dashboard</h3>
-              <button type="button" className="close-sidebar" onClick={() => setIsDrawerOpen(false)}>
-                ✕
-              </button>
+        <div className="sidebar-content">
+          <div className="sidebar-header">
+            <h3>Dashboard</h3>
+            <button type="button" className="close-sidebar" onClick={() => setIsDrawerOpen(false)}>
+              ✕
+            </button>
+          </div>
+          <StatusBar
+            connected={connected}
+            managedRelays={managedRelays}
+            relayStatus={relayStatus}
+            isOfflineMode={isOfflineMode}
+            isRelayModalOpen={isRelayModalOpen}
+            setIsRelayModalOpen={setIsRelayModalOpen}
+            isManualRefreshing={isManualRefreshing}
+            triggerManualRefresh={triggerManualRefresh}
+          />
+          <section className="filter-panel">
+            <div className="filter-panel__toggles">
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeReactions}
+                  onChange={() => setIncludeReactions((prev) => !prev)}
+                />
+                Load Reactions
+              </label>
+              <label>
+                <input
+                  type="checkbox"
+                  checked={includeServiceRecords}
+                  onChange={() => setIncludeServiceRecords((prev) => !prev)}
+                />
+                Load NCC Service Records
+              </label>
             </div>
+            <div className="filter-panel__cache">
+              <label>
+                Local cache limit: {localCacheLimit}
+                <input
+                  type="range"
+                  min={20}
+                  max={200}
+                  step={10}
+                  value={localCacheLimit}
+                  onChange={(event) => setLocalCacheLimit(Number(event.target.value))}
+                />
+              </label>
+              <label>
+                IndexedDB cache limit: {indexedDbCacheLimit}
+                <input
+                  type="range"
+                  min={100}
+                  max={500}
+                  step={50}
+                  value={indexedDbCacheLimit}
+                  onChange={(event) => setIndexedDbCacheLimit(Number(event.target.value))}
+                />
+              </label>
+            </div>
+            <div className="filter-panel__status">
+              {isLoadingMoreCache
+                ? "Loading more cached posts…"
+                : hasMoreCacheEvents
+                ? "Scroll to load more cached posts"
+                : "Cached posts exhausted"}
+            </div>
+          </section>
             <div className="post-composer-section">
               <h4>New post</h4>
               <form onSubmit={handlePublish} className="post-form sidebar-form">

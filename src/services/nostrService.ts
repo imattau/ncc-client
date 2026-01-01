@@ -56,10 +56,10 @@ export class NostrService {
     }
   }
 
-  static async fetchEvent(eventId: string): Promise<NostrToolsEvent | null> {
+  static async fetchEvent(eventId: string, relays: string[] = DEFAULT_RELAYS): Promise<NostrToolsEvent | null> {
     try {
       const pool = getRelayPool();
-      const events = await pool.querySync(DEFAULT_RELAYS, {
+      const events = await pool.querySync(relays, {
         ids: [eventId],
         kinds: [1, 30023],
         limit: 1
@@ -70,12 +70,12 @@ export class NostrService {
     }
   }
 
-  static async fetchHashtag(hashtag: string): Promise<NostrToolsEvent[]> {
+  static async fetchHashtag(hashtag: string, relays: string[] = DEFAULT_RELAYS): Promise<NostrToolsEvent[]> {
     try {
       const normalized = hashtag.replace(/^#+/, "").toLowerCase();
       if (!normalized) return [];
       const pool = getRelayPool();
-      const events = await pool.querySync(DEFAULT_RELAYS, {
+      const events = await pool.querySync(relays, {
         kinds: [1, 30023],
         "#t": [normalized],
         limit: 30
@@ -86,12 +86,12 @@ export class NostrService {
     }
   }
 
-  static async fetchKeyword(keyword: string): Promise<NostrToolsEvent[]> {
+  static async fetchKeyword(keyword: string, relays: string[] = DEFAULT_RELAYS): Promise<NostrToolsEvent[]> {
     try {
       const trimmed = keyword.trim().toLowerCase();
       if (!trimmed) return [];
       const pool = getRelayPool();
-      const events = await pool.querySync(DEFAULT_RELAYS, {
+      const events = await pool.querySync(relays, {
         kinds: [1, 30023],
         limit: 40
       });
