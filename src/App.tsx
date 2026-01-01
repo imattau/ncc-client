@@ -204,6 +204,11 @@ const FILTER_DEFINITIONS: { id: TimelineFilterId; label: string }[] = [
   { id: "conventions", label: "Conventions" }
 ];
 
+const MAX_EVENTS_IN_MEMORY = 320;
+const MAX_INCOMING_QUEUE = 200;
+
+const clampEvents = (list: NostrEvent[]) => list.slice(0, MAX_EVENTS_IN_MEMORY);
+
 const App = () => {
   const { connected, refresh } = useNccClient();
   const { service: discovery, status: discoveryStatus, error: discoveryError } = useNcc02Discovery(
@@ -422,9 +427,10 @@ const App = () => {
       window.clearTimeout(cacheFlushTimeoutRef.current);
     }
     cacheFlushTimeoutRef.current = window.setTimeout(() => {
+      const cacheEntries = clampEvents(events).slice(0, indexedDbCacheLimit);
       cacheWorkerRef.current?.postMessage({
         type: "cache",
-        entries: events.slice(0, indexedDbCacheLimit)
+        entries: cacheEntries
       });
     }, 400);
 
@@ -448,13 +454,13 @@ const App = () => {
     setIsLoadingMoreCache(true);
     const batch = await readCachedEvents(CACHE_BATCH_SIZE, cacheLoadedRef.current);
     cacheLoadedRef.current += batch.length;
-    setEvents((prev) => {
-      const pool = new Map<string, NostrEvent>();
-      prev.forEach((event) => pool.set(event.id, event));
-      batch.forEach((event) => pool.set(event.id, event));
-      const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
-      return merged.slice(0, indexedDbCacheLimit);
-    });
+      setEvents((prev) => {
+        const pool = new Map<string, NostrEvent>();
+        prev.forEach((event) => pool.set(event.id, event));
+        batch.forEach((event) => pool.set(event.id, event));
+        const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
+        return clampEvents(merged);
+      });
     setGlobalLimit((prev) => Math.min(prev + CACHE_BATCH_SIZE, indexedDbCacheLimit));
     if (batch.length < CACHE_BATCH_SIZE || cacheLoadedRef.current >= indexedDbCacheLimit) {
       hasMoreCacheEventsRef.current = false;
@@ -468,7 +474,7 @@ const App = () => {
     cacheLoadedRef.current = 0;
     hasMoreCacheEventsRef.current = true;
     setHasMoreCacheEvents(true);
-    setEvents((prev) => prev.slice(0, indexedDbCacheLimit));
+    setEvents((prev) => clampEvents(prev.slice(0, indexedDbCacheLimit)));
     void loadNextCacheBatch();
   }, [loadNextCacheBatch, indexedDbCacheLimit]);
 
@@ -576,7 +582,7 @@ const App = () => {
     const filtered = ids.filter((id) => !deleted.has(id));
     if (!filtered.length) return;
     filtered.forEach((id) => deleted.add(id));
-    setEvents((prev) => prev.filter((event) => !filtered.includes(event.id)));
+    setEvents((prev) => clampEvents(prev.filter((event) => !filtered.includes(event.id))));
     setPendingEvents((prev) => prev.filter((event) => !filtered.includes(event.id)));
   }, []);
 
@@ -633,6 +639,9 @@ const App = () => {
       }
 
       incomingEventsRef.current.push(event);
+      if (incomingEventsRef.current.length > MAX_INCOMING_QUEUE) {
+        incomingEventsRef.current.splice(0, incomingEventsRef.current.length - MAX_INCOMING_QUEUE);
+      }
       scheduleIncomingFlush();
     },
     [handleContactEvent, scheduleIncomingFlush, updateProfileMetadata]
@@ -1295,7 +1304,7 @@ const App = () => {
           }
           const deduped = uniqueBatch.filter((event) => !seen.has(event.id));
           const merged = [...deduped, ...prev];
-          return merged.slice(0, 200);
+          return clampEvents(merged);
         });
       });
     },
@@ -1446,7 +1455,7 @@ const App = () => {
           if (remoteEvent) {
             setEvents((prev) => {
               if (prev.some((existing) => existing.id === remoteEvent.id)) return prev;
-              return [mapNostrToolsEvent(remoteEvent), ...prev].slice(0, 200);
+              return clampEvents([mapNostrToolsEvent(remoteEvent), ...prev]);
             });
           }
         }
@@ -1460,7 +1469,7 @@ const App = () => {
                 if (deduped.some((existing) => existing.id === remoteEvent.id)) continue;
                 deduped.unshift(mapNostrToolsEvent(remoteEvent));
               }
-              return deduped.slice(0, 200);
+              return clampEvents(deduped);
             });
           }
         }
@@ -1474,7 +1483,7 @@ const App = () => {
                 if (deduped.some((existing) => existing.id === remoteEvent.id)) continue;
                 deduped.unshift(mapNostrToolsEvent(remoteEvent));
               }
-              return deduped.slice(0, 200);
+              return clampEvents(deduped);
             });
           }
         }
