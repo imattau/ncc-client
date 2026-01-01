@@ -1,16 +1,22 @@
 import { PlaylistPlayer } from "./PlaylistPlayer";
 import { MediaManager } from "../utils/mediaManager";
 import { getDomain } from "../utils/hashtags";
+import { useInView } from "../hooks/useInView";
 
 interface LinkPreviewProps {
   url: string;
 }
 
 export function LinkPreview({ url }: LinkPreviewProps) {
+  const [ref, visible] = useInView<HTMLElement>();
   const type = MediaManager.getMediaType(url);
   const domain = getDomain(url);
 
   const renderMedia = () => {
+    if (!visible) {
+      return <div className="attachment-media-placeholder" />;
+    }
+
     switch (type) {
       case "image":
         return <img src={url} alt={`Preview of ${domain}`} loading="lazy" />;
@@ -39,7 +45,7 @@ export function LinkPreview({ url }: LinkPreviewProps) {
   };
 
   return (
-    <article className={`link-preview-card link-preview-${type}`}>
+    <article ref={ref} className={`link-preview-card link-preview-${type}`}>
       <div className="link-preview-media">{renderMedia()}</div>
       <div className="link-preview-meta">
         <span className="link-preview-domain">{domain}</span>

@@ -14,8 +14,8 @@ const baseFilters: Filter[] = [
   { kinds: [1], limit: 60 },
   { kinds: [30023], limit: 40 },
   { kinds: [0], limit: 80 },
-  { kinds: [30058, 30059, 30060, 30061], limit: 80 },
-  { limit: 80 }
+  { kinds: [6, 7], limit: 100 },
+  { kinds: [30058, 30059, 30060, 30061], limit: 50 }
 ];
 let extraFilters: Filter[] = [];
 
@@ -86,10 +86,14 @@ const scheduleSubscriptions = () => {
   const filtersToUse = buildFilters();
   filtersToUse.forEach((filter, index) => {
     const timeout = self.setTimeout(() => {
-      const sub = pool.subscribe(currentRelays, filter, {
-        onevent: handleEvent
-      });
-      subscriptions.push(sub);
+      try {
+        const sub = pool.subscribe(currentRelays, filter, {
+          onevent: handleEvent
+        });
+        subscriptions.push(sub);
+      } catch (err) {
+        console.error("[RelayWorker] Subscribe error", err);
+      }
     }, index * THROTTLE_INTERVAL_MS);
     scheduledTimeouts.push(timeout);
   });

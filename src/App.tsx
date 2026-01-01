@@ -31,14 +31,7 @@ import SearchPanel from "./components/SearchPanel";
 import { SearchManager } from "./services/searchManager";
 import type { SearchEntry } from "./types/search";
 import { useInView } from "./hooks/useInView";
-import {
-  fetchRemoteEvent,
-  fetchRemoteHashtag,
-  fetchRemoteKeyword,
-  fetchRemoteProfile,
-  isEventIdQuery,
-  parsePubkeyFromInput
-} from "./services/searchRelay";
+import { NostrService } from "./services/nostrService";
 import {
   classifyNccDiscoveryEvent,
   INITIAL_NCC_STATS,
@@ -48,7 +41,7 @@ import {
 
 const canonicalizePubkey = (value?: string | null) => {
   if (!value) return null;
-  const normalized = parsePubkeyFromInput(value);
+  const normalized = NostrService.parsePubkeyFromInput(value);
   if (normalized) return normalized;
   if (/^[0-9a-f]{64}$/i.test(value)) {
     return value.toLowerCase();
@@ -67,7 +60,7 @@ const describeMediaError = (error: MediaError | null | undefined) => {
 const FOLLOWING_AUTHORS = ["@alice", "@nate", "@lena"];
 const USER_PRIVATE_KEY = generateSecretKey();
 const USER_PUBLIC_KEY = getPublicKey(USER_PRIVATE_KEY);
-const COLUMN_FILL_TARGET = 20;
+const COLUMN_FILL_TARGET = 200;
 
 const SERVICE_ID = "ncc-client-demo";
 
@@ -80,8 +73,7 @@ const formatAgo = (timestamp: number) => {
 };
 
 const CONTENT_PREVIEW_LENGTH = 220;
-const BASELINE_EVENT_TARGET = 60;
-const PENDING_FLUSH_CHUNK = 20;
+const PENDING_FLUSH_CHUNK = 40;
 const PULL_THRESHOLD = 80;
 const MAX_PULL_DISTANCE = 120;
 
@@ -226,6 +218,9 @@ const App = () => {
     events.forEach((event) => map.set(event.id, event));
     return map;
   }, [events]);
+
+  const eventsByIdRef = useRef(eventsById);
+  eventsByIdRef.current = eventsById;
   const pullStartRef = useRef<number | null>(null);
   const pullTargetRef = useRef<HTMLDivElement | null>(null);
   const pullDistanceRef = useRef<number>(0);
@@ -235,11 +230,6 @@ const App = () => {
   const commitScheduledRef = useRef(false);
   const queueFlushScheduledRef = useRef(false);
   const queueFlushTimeoutRef = useRef<number | null>(null);
-  const columnPrimedRef = useRef({
-    following: false,
-    articles: false,
-    global: false
-  });
 
   const processIncomingBatch = useCallback(() => {
     queueFlushScheduledRef.current = false;
@@ -261,7 +251,7 @@ const App = () => {
       const seen = new Set(prev.map((existing) => existing.id));
       const deduped = filtered.filter((event) => !seen.has(event.id));
       const merged = [...deduped, ...prev];
-      return merged.slice(0, 400);
+      return merged.slice(0, 40);
     });
     if (incomingEventsRef.current.length) {
       queueFlushScheduledRef.current = true;
@@ -276,6 +266,7 @@ const App = () => {
   }, [processIncomingBatch]);
 
   useEffect(() => {
+    queueFlushScheduledRef.current = false;
     return () => {
       if (queueFlushTimeoutRef.current !== null) {
         window.clearTimeout(queueFlushTimeoutRef.current);
@@ -306,7 +297,7 @@ const App = () => {
   const isSignedIn = Boolean(authSession);
   const canonicalAuthPubkey = useMemo(() => {
     if (!authSession?.pubkey) return null;
-    const normalized = parsePubkeyFromInput(authSession.pubkey);
+    const normalized = NostrService.parsePubkeyFromInput(authSession.pubkey);
     return normalized ?? authSession.pubkey.toLowerCase();
   }, [authSession?.pubkey]);
 
@@ -383,6 +374,21 @@ const App = () => {
       }
 
       if (event.kind === 3 && handleContactEvent(event)) {
+        return;
+      }
+
+      if (event.kind === 7 || event.kind === 6) {
+        const targetId = event.tags?.find((t) => t[0] === "e")?.[1];
+        if (targetId) {
+          setEvents((prev) =>
+            prev.map((e) => {
+              if (e.id !== targetId) return e;
+              if (event.kind === 7) return { ...e, likes: (e.likes ?? 0) + 1 };
+              if (event.kind === 6) return { ...e, reposts: (e.reposts ?? 0) + 1 };
+              return e;
+            })
+          );
+        }
         return;
       }
 
@@ -472,6 +478,44 @@ const App = () => {
     },
     [relayManager]
   );
+
+  const handlePublishRelayList = useCallback(async () => {
+    if (!authSession) {
+      setRelayMessage({ type: "error", text: "Sign in to publish relays to the network." });
+      return;
+    }
+
+    setRelayMessage({ type: "info", text: "Publishing relay list..." });
+
+    try {
+      const relays = relayManager.getRelays();
+      const tags = relays.map((url) => ["r", url]);
+      
+      let event: NostrToolsEvent;
+      const baseEvent = {
+        kind: 10002,
+        created_at: Math.floor(Date.now() / 1000),
+        tags,
+        content: ""
+      };
+
+      if (authSession.method === "nsec" && authSession.details?.secretHex) {
+        const secretKey = authManager.hexToBytes(authSession.details.secretHex);
+        event = finalizeEvent(baseEvent, secretKey);
+      } else if (signerRef.current) {
+        event = await signerRef.current.signEvent(baseEvent);
+      } else if (window.nostr?.signEvent) {
+        event = (await window.nostr.signEvent(baseEvent)) as NostrToolsEvent;
+      } else {
+        throw new Error("No signing method available.");
+      }
+
+      await publishEvent(event);
+      setRelayMessage({ type: "info", text: "Relay list saved to network!" });
+    } catch (error) {
+      setRelayMessage({ type: "error", text: `Failed to publish: ${(error as Error).message}` });
+    }
+  }, [authSession, relayManager]);
 
   useEffect(() => {
     const handleWindowError = (event: ErrorEvent) => {
@@ -589,8 +633,15 @@ const App = () => {
       setIsSignInMenuOpen(false);
       setSignInError(null);
       setActiveColumn("following");
+      
+      // Sync NIP-65 relays
+      relayManager.fetchNip65Relays(session.pubkey).then((relays) => {
+        if (relays) {
+          setManagedRelays(relays);
+        }
+      });
     },
-    [setActiveColumn]
+    [setActiveColumn, relayManager]
   );
 
   const handleSignOut = useCallback(async () => {
@@ -775,7 +826,14 @@ const App = () => {
       setBunkerInput(stored.details.bunkerInput);
       void connectToBunker(stored.details.bunkerInput, { persistInput: false });
     }
-  }, [connectToBunker]);
+    
+    // Refresh relays from network
+    relayManager.fetchNip65Relays(stored.pubkey).then((relays) => {
+      if (relays) {
+        setManagedRelays(relays);
+      }
+    });
+  }, [connectToBunker, relayManager]);
 
   const handleWorkerDeletion = useCallback((ids: string[]) => {
     applyDeletions(ids);
@@ -798,11 +856,13 @@ const App = () => {
 
   const feedFilters = useMemo<Filter[]>(() => {
     if (!isSignedIn || !followingAuthorsHex.length) return [];
+    const twoWeeksAgo = Math.floor(Date.now() / 1000) - (14 * 24 * 60 * 60);
     return [
       {
         authors: followingAuthorsHex,
-        kinds: [1, 30023],
-        limit: 40
+        kinds: [0, 1, 30023],
+        since: twoWeeksAgo,
+        limit: 200
       }
     ];
   }, [isSignedIn, followingAuthorsHex]);
@@ -831,10 +891,10 @@ const App = () => {
     () =>
       new PostRenderer({
         previewLength: CONTENT_PREVIEW_LENGTH,
-        resolveEvent: (id) => eventsById.get(id),
+        resolveEvent: (id) => eventsByIdRef.current.get(id),
         onMissingReference: fetchReferencedEvent
       }),
-    [eventsById, fetchReferencedEvent]
+    [fetchReferencedEvent]
   );
 
   const matchesActiveHashtag = useCallback(
@@ -851,15 +911,28 @@ const App = () => {
       pendingCommitRef.current.push(...incoming);
       if (commitScheduledRef.current) return;
       commitScheduledRef.current = true;
+
       requestAnimationFrame(() => {
+        const batch = [...pendingCommitRef.current];
+        pendingCommitRef.current = [];
+        commitScheduledRef.current = false;
+
+        if (batch.length === 0) return;
+
         setEvents((prev) => {
           const seen = new Set(prev.map((event) => event.id));
-          const deduped = pendingCommitRef.current.filter((event) => !seen.has(event.id));
+          const uniqueBatch = [];
+          const batchSeen = new Set();
+          for (const event of batch) {
+            if (!batchSeen.has(event.id)) {
+              batchSeen.add(event.id);
+              uniqueBatch.push(event);
+            }
+          }
+          const deduped = uniqueBatch.filter((event) => !seen.has(event.id));
           const merged = [...deduped, ...prev];
           return merged.slice(0, 200);
         });
-        pendingCommitRef.current = [];
-        commitScheduledRef.current = false;
       });
     },
     []
@@ -892,14 +965,14 @@ const App = () => {
       [...events]
         .filter(
           (event) =>
-            followingAuthors.includes(event.author) &&
+            followingAuthorsHex.includes(event.author) &&
             !mutedAuthors.includes(event.author) &&
             event.kind === 1 &&
             !event.isArticle &&
             matchesActiveHashtag(event)
         )
         .sort((a, b) => b.created_at - a.created_at),
-    [events, mutedAuthors, followingAuthors]
+    [events, mutedAuthors, followingAuthorsHex]
   );
 
   const articleEvents = useMemo(
@@ -907,12 +980,12 @@ const App = () => {
       events
         .filter(
           (event) =>
-            followingAuthors.includes(event.author) &&
+            followingAuthorsHex.includes(event.author) &&
             (event.isArticle || event.kind === 30023) &&
             matchesActiveHashtag(event)
         )
         .sort((a, b) => b.created_at - a.created_at),
-    [events, followingAuthors, matchesActiveHashtag]
+    [events, followingAuthorsHex, matchesActiveHashtag]
   );
 
   const globalEvents = useMemo(() => {
@@ -932,101 +1005,40 @@ const App = () => {
   const showArticleSkeleton = articleDisplay.length < 3;
   const showGlobalSkeleton = globalDisplay.length < 3;
 
-  const isFollowingEvent = useCallback(
-    (event: NostrEvent) =>
-      followingAuthors.includes(event.author) &&
-      !mutedAuthors.includes(event.author) &&
-      event.kind === 1 &&
-      !event.isArticle,
-    [followingAuthors, mutedAuthors]
-  );
+    const isFollowingEvent = useCallback(
+      (event: NostrEvent) =>
+        followingAuthorsHex.includes(event.author) &&
+        !mutedAuthors.includes(event.author) &&
+        event.kind === 1 &&
+        !event.isArticle,
+      [followingAuthorsHex, mutedAuthors]
+    );
+  
+    const isArticleEvent = useCallback(
+      (event: NostrEvent) =>
+        followingAuthorsHex.includes(event.author) && (event.isArticle || event.kind === 30023),
+      [followingAuthorsHex]
+    );  
+    const showFollowingColumn = isSignedIn && (!isCompactView || activeColumn === "following");
+    const showArticleColumn = isSignedIn && (!isCompactView || activeColumn === "articles");
 
-  const isArticleEvent = useCallback(
-    (event: NostrEvent) =>
-      followingAuthors.includes(event.author) && (event.isArticle || event.kind === 30023),
-    [followingAuthors]
-  );
+    const showGlobalColumn = !isCompactView || activeColumn === "global" || !isSignedIn;
 
-  const followingNewCount = pendingEvents.filter(isFollowingEvent).length;
-  const articleNewCount = pendingEvents.filter(isArticleEvent).length;
-  const globalNewCount = pendingEvents.length;
+  
 
-  const showFollowingColumn = isSignedIn && (!isCompactView || activeColumn === "following");
-  const showArticleColumn = isSignedIn && (!isCompactView || activeColumn === "articles");
-  const showGlobalColumn = !isCompactView || activeColumn === "global" || !isSignedIn;
-  const MIN_COLUMN_ITEMS = COLUMN_FILL_TARGET;
+    useEffect(() => {
 
-  useEffect(() => {
-    if (!pendingEvents.length) return;
-    const actions: Array<{
-      count: number;
-      predicate?: (event: NostrEvent) => boolean;
-      column: "following" | "articles" | "global";
-    }> = [];
+      if (!pendingEvents.length || events.length >= COLUMN_FILL_TARGET) return;
 
-    if (showFollowingColumn && !columnPrimedRef.current.following) {
-      if (followingDisplay.length >= MIN_COLUMN_ITEMS) {
-        columnPrimedRef.current.following = true;
-      } else {
-        actions.push({
-          column: "following",
-          count: Math.max(MIN_COLUMN_ITEMS - followingDisplay.length, 0),
-          predicate: isFollowingEvent
-        });
-      }
-    }
+      flushPendingEvents(COLUMN_FILL_TARGET - events.length);
 
-    if (showArticleColumn && !columnPrimedRef.current.articles) {
-      if (articleDisplay.length >= MIN_COLUMN_ITEMS) {
-        columnPrimedRef.current.articles = true;
-      } else {
-        actions.push({
-          column: "articles",
-          count: Math.max(MIN_COLUMN_ITEMS - articleDisplay.length, 0),
-          predicate: isArticleEvent
-        });
-      }
-    }
+    }, [pendingEvents.length, events.length, flushPendingEvents]);
 
-    if (showGlobalColumn && !columnPrimedRef.current.global) {
-      if (globalDisplay.length >= MIN_COLUMN_ITEMS) {
-        columnPrimedRef.current.global = true;
-      } else {
-        actions.push({
-          column: "global",
-          count: Math.max(MIN_COLUMN_ITEMS - globalDisplay.length, 0)
-        });
-      }
-    }
+  
 
-    if (!actions.length) return;
+    useEffect(() => {
 
-    actions.forEach((action) => {
-      const flushed = flushPendingEvents(action.count, action.predicate);
-      if (flushed > 0 && action.count > 0) {
-        columnPrimedRef.current[action.column] = true;
-      }
-    });
-  }, [
-    pendingEvents.length,
-    showFollowingColumn,
-    showArticleColumn,
-    showGlobalColumn,
-    followingDisplay.length,
-    articleDisplay.length,
-    globalDisplay.length,
-    isFollowingEvent,
-    isArticleEvent,
-    flushPendingEvents
-  ]);
-
-  useEffect(() => {
-    if (events.length >= BASELINE_EVENT_TARGET || !pendingEvents.length) return;
-    flushPendingEvents(PENDING_FLUSH_CHUNK);
-  }, [events.length, pendingEvents.length]);
-
-  useEffect(() => {
-    if (!isSignedIn) {
+      if (!isSignedIn) {
       setActiveColumn("global");
       setIsProfileModalOpen(false);
     }
@@ -1095,9 +1107,9 @@ const App = () => {
       return;
     }
     const timer = window.setTimeout(async () => {
-      const pubkeyHex = parsePubkeyFromInput(trimmed);
+      const pubkeyHex = NostrService.parsePubkeyFromInput(trimmed);
       const needsProfile = Boolean(pubkeyHex && !remoteSearchCacheRef.current.profiles.has(pubkeyHex));
-      const eventId = isEventIdQuery(trimmed);
+      const eventId = NostrService.isEventIdQuery(trimmed);
       const needsEvent = Boolean(eventId && !remoteSearchCacheRef.current.events.has(eventId));
       const isHashtag = trimmed.startsWith("#");
       const normalizedKeyword = trimmed.toLowerCase();
@@ -1118,14 +1130,14 @@ const App = () => {
       try {
         if (needsProfile && pubkeyHex) {
           remoteSearchCacheRef.current.profiles.add(pubkeyHex);
-          const remoteProfile = await fetchRemoteProfile(pubkeyHex);
+          const remoteProfile = await NostrService.fetchProfile(pubkeyHex, managedRelays);
           if (remoteProfile?.metadata) {
             updateProfileMetadata(pubkeyHex, remoteProfile.metadata);
           }
         }
         if (needsEvent && eventId) {
           remoteSearchCacheRef.current.events.add(eventId);
-          const remoteEvent = await fetchRemoteEvent(eventId);
+          const remoteEvent = await NostrService.fetchEvent(eventId);
           if (remoteEvent) {
             setEvents((prev) => {
               if (prev.some((existing) => existing.id === remoteEvent.id)) return prev;
@@ -1135,7 +1147,7 @@ const App = () => {
         }
         if (needsHashtag) {
           remoteSearchCacheRef.current.hashtags.add(normalizedKeyword);
-          const remoteEvents = await fetchRemoteHashtag(normalizedKeyword);
+          const remoteEvents = await NostrService.fetchHashtag(normalizedKeyword);
           if (remoteEvents.length) {
             setEvents((prev) => {
               const deduped = [...prev];
@@ -1149,7 +1161,7 @@ const App = () => {
         }
         if (needsKeyword) {
           remoteSearchCacheRef.current.keywords.add(normalizedKeyword);
-          const remoteEvents = await fetchRemoteKeyword(normalizedKeyword);
+          const remoteEvents = await NostrService.fetchKeyword(normalizedKeyword);
           if (remoteEvents.length) {
             setEvents((prev) => {
               const deduped = [...prev];
@@ -1178,19 +1190,12 @@ const App = () => {
     manualRefreshRef.current = isManualRefreshing;
   }, [isManualRefreshing]);
 
-  const resetColumnPrimed = useCallback(() => {
-    columnPrimedRef.current = {
-      following: false,
-      articles: false,
-      global: false
-    };
-  }, []);
-
   const triggerManualRefresh = useCallback(async () => {
     if (manualRefreshRef.current) return;
     setIsManualRefreshing(true);
+    setEvents([]);
+    setManagedRelays((prev) => [...prev]);
     try {
-      resetColumnPrimed();
       await refresh();
     } finally {
       setIsManualRefreshing(false);
@@ -1207,7 +1212,7 @@ const App = () => {
       if (pendingProfileRequestsRef.current.has(normalized)) continue;
       pendingProfileRequestsRef.current.add(normalized);
       queue.push(normalized);
-      if (queue.length >= 6) break;
+      if (queue.length >= 12) break;
     }
     if (!queue.length) return;
     let cancelled = false;
@@ -1215,7 +1220,7 @@ const App = () => {
       for (const pubkey of queue) {
         if (cancelled) break;
         try {
-          const remoteProfile = await fetchRemoteProfile(pubkey);
+          const remoteProfile = await NostrService.fetchProfile(pubkey, managedRelays);
           if (remoteProfile?.metadata) {
             updateProfileMetadata(pubkey, remoteProfile.metadata);
           }
@@ -1233,12 +1238,11 @@ const App = () => {
   useEffect(() => {
     if (!canonicalAuthPubkey) return;
     const syncProfile = async () => {
-      const remoteProfile = await fetchRemoteProfile(canonicalAuthPubkey);
+      const remoteProfile = await NostrService.fetchProfile(canonicalAuthPubkey, managedRelays);
       if (remoteProfile?.metadata) {
         updateProfileMetadata(canonicalAuthPubkey, remoteProfile.metadata);
       }
     };
-    resetColumnPrimed();
     void syncProfile();
     refresh();
   }, [canonicalAuthPubkey, refresh, updateProfileMetadata]);
@@ -1391,11 +1395,10 @@ const App = () => {
           const mediaType = MediaManager.getMediaType(attachment.url ?? "", attachment.type);
           if (mediaType === "image" && attachment.url) {
             return (
-              <img
+              <LazyImage
                 key={key}
-                src={attachment.url}
+                url={attachment.url}
                 alt={attachment.description ?? "attachment"}
-                loading="lazy"
                 className="attachment-item"
               />
             );
@@ -1500,11 +1503,15 @@ const App = () => {
 
   const handleAction = (type: "like" | "repost" | "mute", eventId: string, author?: string) => {
     if (type === "like") {
-      setLikedEvents((prev) => (prev.includes(eventId) ? prev : [...prev, eventId]));
+      setLikedEvents((prev) =>
+        prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId]
+      );
     }
 
     if (type === "repost") {
-      setRepostedEvents((prev) => (prev.includes(eventId) ? prev : [...prev, eventId]));
+      setRepostedEvents((prev) =>
+        prev.includes(eventId) ? prev.filter((id) => id !== eventId) : [...prev, eventId]
+      );
     }
 
     if (type === "mute" && author) {
@@ -1532,30 +1539,44 @@ const App = () => {
   };
 
   const renderActions = (event: NostrEvent) => {
-    const totalLikes = (event.likes ?? 0) + (likedEvents.includes(event.id) ? 1 : 0);
-    const totalReposts = (event.reposts ?? 0) + (repostedEvents.includes(event.id) ? 1 : 0);
+    const isLiked = likedEvents.includes(event.id);
+    const isReposted = repostedEvents.includes(event.id);
+    const totalLikes = (event.likes ?? 0) + (isLiked ? 1 : 0);
+    const totalReposts = (event.reposts ?? 0) + (isReposted ? 1 : 0);
 
     return (
       <div className="actions">
         <button
           type="button"
-          className={likedEvents.includes(event.id) ? "active" : ""}
+          className={isLiked ? "active-like" : ""}
           onClick={() => handleAction("like", event.id)}
+          title={isLiked ? "Unlike" : "Like"}
         >
-          ❤️ {totalLikes}
+          <svg viewBox="0 0 24 24" fill={isLiked ? "currentColor" : "none"} stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M21 8.25c0-2.485-2.099-4.5-4.688-4.5-1.935 0-3.597 1.126-4.312 2.733-.715-1.607-2.377-2.733-4.313-2.733C5.1 3.75 3 5.765 3 8.25c0 7.22 9 12 9 12s9-4.78 9-12z" />
+          </svg>
+          <span>{totalLikes > 0 ? totalLikes : ""}</span>
         </button>
         <button
           type="button"
-          className={repostedEvents.includes(event.id) ? "active" : ""}
+          className={isReposted ? "active-repost" : ""}
           onClick={() => handleAction("repost", event.id)}
+          title={isReposted ? "Undo Repost" : "Repost"}
         >
-          🔁 {totalReposts}
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M19.5 12c0-1.232-.046-2.453-.138-3.662a4.006 4.006 0 00-3.7-3.7 48.678 48.678 0 00-7.324 0 4.006 4.006 0 00-3.7 3.7c-.017.22-.032.441-.046.662M19.5 12l3-3m-3 3l-3-3m-12 3c0 1.232.046 2.453.138 3.662a4.006 4.006 0 003.7 3.7 48.656 48.656 0 007.324 0 4.006 4.006 0 003.7-3.7c.017-.22.032-.441.046-.662M4.5 12l3 3m-3-3l-3 3" />
+          </svg>
+          <span>{totalReposts > 0 ? totalReposts : ""}</span>
         </button>
-        <button type="button" onClick={() => handleShare(event)}>
-          📤 Share
+        <button type="button" onClick={() => handleShare(event)} title="Share">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M7.217 10.907a2.25 2.25 0 100 2.186m0-2.186c.18.324.283.696.283 1.093s-.103.77-.283 1.093m0-2.186l9.566-5.314m-9.566 7.5l9.566 5.314m0 0a2.25 2.25 0 103.935 2.186 2.25 2.25 0 00-3.935-2.186zm0-12.814a2.25 2.25 0 103.933-2.185 2.25 2.25 0 00-3.933 2.185z" />
+          </svg>
         </button>
-        <button type="button" onClick={() => handleAction("mute", event.id, event.author)}>
-          🚫 Mute
+        <button type="button" onClick={() => handleAction("mute", event.id, event.author)} title="Mute Author">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" d="M3 3l18 18M9 9l-6 6m0-6l6 6m12-12l-6 6m0-6l6 6" />
+          </svg>
         </button>
     </div>
   );
@@ -1705,8 +1726,8 @@ const App = () => {
           >
             Relays: {managedRelays.length}
           </button>
-          <button type="button" onClick={refresh}>
-            Refresh
+          <button type="button" onClick={triggerManualRefresh} disabled={isManualRefreshing}>
+            {isManualRefreshing ? "Refreshing..." : "Refresh"}
           </button>
         </div>
       </header>
@@ -1891,6 +1912,16 @@ const App = () => {
               {relayMessage && (
                 <p className={`relay-modal-message ${relayMessage.type}`}>{relayMessage.text}</p>
               )}
+              {isSignedIn && (
+                <button 
+                  type="button" 
+                  className="secondary" 
+                  style={{ marginBottom: '0.5rem' }}
+                  onClick={handlePublishRelayList}
+                >
+                  Save to network (NIP-65)
+                </button>
+              )}
               <div className="relay-list">
                 {managedRelays.map((relay) => (
                   <div className="relay-row" key={relay}>
@@ -1961,80 +1992,73 @@ const App = () => {
         </div>
       )}
 
-      {isDrawerOpen && (
-        <div className="drawer-overlay" onClick={() => setIsDrawerOpen(false)} />
-      )}
-      <aside className={`drawer ${isDrawerOpen ? "open" : ""}`}>
-        <div className="drawer-content">
-          <h3>New post</h3>
-          <form onSubmit={handlePublish} className="post-form drawer-form">
-            <textarea
-              placeholder="Share a note or a longer thought..."
-              value={draft.content}
-              onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
-            />
-            <div className="form-row">
-              <select
-                value={draft.type}
-                onChange={(event) => setDraft((prev) => ({ ...prev, type: event.target.value }))}
-              >
-                <option value="note">Note (kind 1)</option>
-                <option value="article">Article (kind 30023)</option>
-              </select>
-              <input type="file" onChange={handleFileChange} />
+      <div className="app-main-layout">
+        {isDrawerOpen && <div className="sidebar-overlay" onClick={() => setIsDrawerOpen(false)} />}
+        <aside className={`sidebar ${isDrawerOpen ? "open" : ""}`}>
+          <div className="sidebar-content">
+            <div className="sidebar-header">
+              <h3>Dashboard</h3>
+              <button type="button" className="close-sidebar" onClick={() => setIsDrawerOpen(false)}>
+                ✕
+              </button>
             </div>
-            {attachedFile && (
-              <div className="upload-preview">
-                Attached: {attachedFile.name} · {(attachedFile.size / 1024).toFixed(1)} KB
+            <div className="post-composer-section">
+              <h4>New post</h4>
+              <form onSubmit={handlePublish} className="post-form sidebar-form">
+                <textarea
+                  placeholder="Share a note or a longer thought..."
+                  value={draft.content}
+                  onChange={(event) => setDraft((prev) => ({ ...prev, content: event.target.value }))}
+                />
+                <div className="form-row">
+                  <select
+                    value={draft.type}
+                    onChange={(event) => setDraft((prev) => ({ ...prev, type: event.target.value }))}
+                  >
+                    <option value="note">Note (kind 1)</option>
+                    <option value="article">Article (kind 30023)</option>
+                  </select>
+                  <input type="file" onChange={handleFileChange} />
+                </div>
+                {attachedFile && (
+                  <div className="upload-preview">
+                    Attached: {attachedFile.name} · {(attachedFile.size / 1024).toFixed(1)} KB
+                  </div>
+                )}
+                <button type="submit">Publish</button>
+              </form>
+            </div>
+            <div className="sidebar-service-panel">
+              <h4>NCC-02 discovery</h4>
+              <div className="service-meta">
+                <span>status: <strong>{discoveryStatus}</strong></span>
+                <span>
+                  endpoint:{" "}
+                  <strong>{discovery?.endpoint ?? "private service"}</strong>
+                </span>
+                <span>owner: {discovery?.pubkey ? formatShortPubkey(discovery.pubkey) : "unknown"}</span>
               </div>
-            )}
-            <button type="submit">Publish</button>
-          </form>
-          <div className="drawer-service-panel">
-            <h4>NCC-02 relay discovery</h4>
-            <p className="service-note">
-              Posts are omitted; NCC-02 feeds relay discovery and falls back to NCC-05 locators when no endpoint is
-              published.
-            </p>
-            <div className="service-meta">
-              <span>status: <strong>{discoveryStatus}</strong></span>
-              <span>
-                endpoint:{" "}
-                <strong>{discovery?.endpoint ?? "private service - NCC-05 fallback required"}</strong>
-              </span>
-              <span>fingerprint: <strong>{discovery?.fingerprint ?? "pending"}</strong></span>
-              <span>owner: {discovery?.pubkey ?? "unknown"}</span>
+              {discoveryError && <p className="service-error">Resolver error: {discoveryError}</p>}
             </div>
-            {discoveryError && <p className="service-error">Resolver error: {discoveryError}</p>}
+            <div className="sidebar-section">
+              <h4>Active Relays</h4>
+              <ul className="relay-mini-list">
+                {managedRelays.slice(0, 5).map((relay) => (
+                  <li key={relay} title={relay}>{relay}</li>
+                ))}
+                {managedRelays.length > 5 && <li className="more-relays">+{managedRelays.length - 5} more</li>}
+              </ul>
+            </div>
           </div>
-          <div className="drawer-section">
-            <h4>Relay info</h4>
-            <ul>
-              {DEFAULT_RELAYS.map((relay) => (
-                <li key={relay}>{relay}</li>
-              ))}
-            </ul>
-          </div>
-        </div>
-      </aside>
+        </aside>
 
-      <div className="layout-grid" data-full-global={!isSignedIn}>
+        <div className="layout-grid" data-full-global={!isSignedIn}>
         {showFollowingColumn && (
           <section className={`column ${activeColumn === "following" ? "active-column" : ""}`}>
             <div className="column-header">
               <div>
                 <h2>Recent • Following Notes</h2>
-                <span className="chip">Following-only feed</span>
               </div>
-              {followingNewCount > 0 && (
-                <button
-                  type="button"
-                  className="new-pill"
-                  onClick={() => flushNewPosts(followingNewCount, isFollowingEvent)}
-                >
-                  {followingNewCount} new
-                </button>
-              )}
             </div>
             <div className="timeline">
               {followingDisplay.map((event) => (
@@ -2073,15 +2097,6 @@ const App = () => {
                 <button type="button" className="ghost-pill">
                   Curated
                 </button>
-                {articleNewCount > 0 && (
-                  <button
-                    type="button"
-                    className="new-pill"
-                    onClick={() => flushNewPosts(articleNewCount, isArticleEvent)}
-                  >
-                    {articleNewCount} new
-                  </button>
-                )}
               </div>
             </div>
             <div className="timeline">
@@ -2122,13 +2137,6 @@ const App = () => {
               <div>
                 <h2>All • Global Mirror</h2>
               </div>
-              <div className="column-header-actions">
-                {globalNewCount > 0 && (
-                  <button type="button" className="new-pill" onClick={() => flushNewPosts(globalNewCount)}>
-                    {globalNewCount} new
-                  </button>
-                )}
-              </div>
             </div>
             <div className="timeline">
               {globalDisplay.map((event) => (
@@ -2156,8 +2164,8 @@ const App = () => {
           </section>
         )}
       </div>
-
     </div>
+  </div>
   );
 };
 
@@ -2217,6 +2225,19 @@ const LazyPlaylistPlayer = ({ url, onError }: LazyMediaProps) => {
     <div ref={ref} className="attachment-video">
       {visible ? (
         <PlaylistPlayer src={url} onError={(error) => onError?.(error)} />
+      ) : (
+        <div className="attachment-media-placeholder" />
+      )}
+    </div>
+  );
+};
+
+const LazyImage = ({ url, alt, className }: { url: string; alt?: string; className?: string }) => {
+  const [ref, visible] = useInView<HTMLImageElement>();
+  return (
+    <div ref={ref} className="attachment-image-container">
+      {visible ? (
+        <img src={url} alt={alt} loading="lazy" className={className} />
       ) : (
         <div className="attachment-media-placeholder" />
       )}

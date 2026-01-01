@@ -12,6 +12,7 @@ export type RelayOperationResult = {
 
 const STORAGE_KEY = "ncc-client-relay-list";
 const NCC02_SERVICE_ID = "relay";
+const RELAY_LIST_KIND = 10002;
 
 export type RelayManagerOptions = {
   ncc05SecretKey?: string | Uint8Array;
@@ -53,22 +54,28 @@ const resolveNcc02Relay = async (input: string, options?: RelayManagerOptions) =
     const serviceId = extractServiceId(input);
     const decoded = nip19.decode(npubCandidate);
     if (decoded.type !== "npub" || typeof decoded.data !== "string") return null;
+    /*
     console.info(`[NCC-02] resolve attempt`, {
       target: input,
       serviceId,
       decoded
     });
+    */
     const attemptResolve = async (candidateId: string) => {
+      /*
       console.info(`[NCC-02] resolve attempt`, {
         target: input,
         serviceId: candidateId,
         decoded
       });
+      */
       const result = await resolveService(decoded.data, candidateId);
+      /*
       console.info(
         `[NCC-02] resolve result`,
         result ? { target: input, serviceId: candidateId, endpoint: result.endpoint } : { target: input, serviceId: candidateId, found: false }
       );
+      */
       return result;
     };
 
@@ -87,7 +94,7 @@ const resolveNcc02Relay = async (input: string, options?: RelayManagerOptions) =
         }
       }
       if (!resolvedRecord) {
-        console.info(`[NCC-02] resolution exhausted`, { target: input, serviceId, candidates: discoveredIds });
+        // console.info(`[NCC-02] resolution exhausted`, { target: input, serviceId, candidates: discoveredIds });
         return null;
       }
     }
@@ -96,11 +103,11 @@ const resolveNcc02Relay = async (input: string, options?: RelayManagerOptions) =
     if (!endpoint) {
       const locator = await resolveNcc05Locator(decoded.data, usedServiceId, options?.ncc05SecretKey);
       if (locator) {
-        console.info(`[NCC-05] locator resolved`, { target: input, serviceId: usedServiceId, endpoint: locator });
+        // console.info(`[NCC-05] locator resolved`, { target: input, serviceId: usedServiceId, endpoint: locator });
         endpoint = locator;
       }
     }
-    console.info(`[NCC-02] resolved endpoint`, { target: input, serviceId: usedServiceId, endpoint });
+    // console.info(`[NCC-02] resolved endpoint`, { target: input, serviceId: usedServiceId, endpoint });
     return endpoint;
   } catch {
     return null;
@@ -143,7 +150,6 @@ const discoverServiceIds = async (ownerPubkey: string) => {
     });
     return Array.from(ids);
   } catch (error) {
-    console.info(`[NCC-02] discovery failure`, { ownerPubkey, error });
     return [];
   }
 };
@@ -166,7 +172,6 @@ export class RelayManager {
     if (!candidate) return { success: false, reason: "Relay URL is empty" };
     const npubCandidate = extractNpubCandidate(candidate);
     if (npubCandidate) {
-      console.info(`[NCC-02] add relay`, { npub: candidate });
       const resolved = await resolveNcc02Relay(candidate, this.options);
       if (!resolved) {
         return { success: false, reason: "Failed to resolve NCC-02 service" };
@@ -217,6 +222,32 @@ export class RelayManager {
     return this.getRelays();
   }
 
+  async fetchNip65Relays(pubkey: string) {
+    try {
+      const pool = getRelayPool();
+      const events = await pool.querySync(DEFAULT_RELAYS, {
+        authors: [pubkey],
+        kinds: [RELAY_LIST_KIND],
+        limit: 1
+      });
+
+      if (!events.length) return null;
+
+      const event = events[0];
+      const relays = event.tags
+        .filter((tag) => tag[0] === "r" && tag[1])
+        .map((tag) => tag[1]);
+
+      if (relays.length > 0) {
+        this.replaceRelays(relays);
+        return relays;
+      }
+    } catch (error) {
+      // ignore failures
+    }
+    return null;
+  }
+
   private addNormalizedRelay(relay: string) {
     if (!isValidRelay(relay)) return { success: false, reason: "Invalid relay URI" };
     if (this.relays.includes(relay)) {
@@ -246,7 +277,7 @@ export class RelayManager {
       const normalized = parsed
         .map((entry) => normalizeRelay(String(entry)))
         .filter((entry) => entry && isValidRelay(entry));
-      return normalized.length ? Array.from(new Set(normalized)) : null;
+      return normalized.length ? Array.from(new Set(normalized)) : [];
     } catch {
       return null;
     }
