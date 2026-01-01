@@ -163,6 +163,8 @@ const failedAvatarCache = new Set<string>();
 const CACHE_BATCH_SIZE = 80;
 const PREFETCH_CACHE_LIMIT = 3;
 const PREFETCH_THRESHOLD = 200;
+const CARD_ESTIMATE_HEIGHT = 320;
+const OVERSCAN_ROWS = 3;
 
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
   serviceRecord: "serviceRecords",
@@ -335,6 +337,29 @@ const App = () => {
   const commitScheduledRef = useRef(false);
   const queueFlushScheduledRef = useRef(false);
   const queueFlushTimeoutRef = useRef<number | null>(null);
+  const timelineRef = useRef<HTMLDivElement>(null);
+  const [virtualStart, setVirtualStart] = useState(0);
+  const [visibleSlots, setVisibleSlots] = useState(() => OVERSCAN_ROWS + 5);
+  const visibleSlotsRef = useRef(visibleSlots);
+  const globalDisplayLengthRef = useRef(0);
+  const recomputeVisibleSlots = useCallback(() => {
+    if (typeof window === "undefined") return;
+    const slots = Math.max(1, Math.ceil(window.innerHeight / CARD_ESTIMATE_HEIGHT) + OVERSCAN_ROWS);
+    visibleSlotsRef.current = slots;
+    setVisibleSlots(slots);
+  }, []);
+  const updateVirtualWindow = useCallback(() => {
+    const node = timelineRef.current;
+    if (!node || typeof window === "undefined") return;
+    const rect = node.getBoundingClientRect();
+    const topOffset = rect.top + window.scrollY;
+    const scrollPos = Math.max(0, window.scrollY - topOffset);
+    const computedStart = Math.floor(scrollPos / CARD_ESTIMATE_HEIGHT);
+    const bufferedStart = Math.max(0, computedStart - OVERSCAN_ROWS);
+    const slots = visibleSlotsRef.current;
+    const maxStart = Math.max(0, (globalDisplayLengthRef.current ?? 0) - slots);
+    setVirtualStart(Math.min(bufferedStart, maxStart));
+  }, []);
   const prefetchedRowsRef = useRef(new Map<number, NostrEvent[]>());
   const prefetchInProgressRef = useRef(new Set<number>());
   const lastScrollYRef = useRef(0);
@@ -531,6 +556,7 @@ const App = () => {
     scrollFrameRequestedRef.current = false;
     const { scrollY, direction } = scrollStateRef.current;
     if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
+    updateVirtualWindow();
     const nearBottom = window.innerHeight + scrollY >= document.documentElement.scrollHeight - PREFETCH_THRESHOLD;
     if (nearBottom) {
       void loadNextCacheBatch();
@@ -541,7 +567,7 @@ const App = () => {
         ? cacheLoadedRef.current
         : Math.max(cacheLoadedRef.current - CACHE_BATCH_SIZE, 0);
     schedulePrefetchCacheRow(prefetchOffset);
-  }, [loadNextCacheBatch, schedulePrefetchCacheRow]);
+  }, [loadNextCacheBatch, schedulePrefetchCacheRow, updateVirtualWindow]);
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -560,6 +586,20 @@ const App = () => {
       window.removeEventListener("scroll", handleScroll);
     };
   }, [processScroll]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const handleResize = () => {
+      recomputeVisibleSlots();
+      updateVirtualWindow();
+    };
+    recomputeVisibleSlots();
+    updateVirtualWindow();
+    window.addEventListener("resize", handleResize);
+    return () => {
+      window.removeEventListener("resize", handleResize);
+    };
+  }, [recomputeVisibleSlots, updateVirtualWindow]);
 
   useEffect(() => {
     if (relayStatus?.connected === false) {
@@ -1394,7 +1434,27 @@ const App = () => {
   }, [activeFilters, baseGlobalEvents, matchesFilterForEvent]);
 
   const globalDisplay = filteredGlobalEvents.slice(0, globalLimit);
+  const visibleCapacity = Math.max(
+    0,
+    Math.min(globalDisplay.length - virtualStart, visibleSlots)
+  );
+  const topSpacerHeight = virtualStart * CARD_ESTIMATE_HEIGHT;
+  const bottomSpacerHeight = Math.max(
+    0,
+    (globalDisplay.length - virtualStart - visibleCapacity) * CARD_ESTIMATE_HEIGHT
+  );
+  const visibleEvents = globalDisplay.slice(virtualStart, virtualStart + visibleCapacity);
   const showGlobalSkeleton = globalDisplay.length < 3;
+  useEffect(() => {
+    globalDisplayLengthRef.current = globalDisplay.length;
+    const maxStart = Math.max(0, globalDisplayLengthRef.current - visibleSlotsRef.current);
+    setVirtualStart((prev) => Math.min(prev, maxStart));
+  }, [globalDisplay.length]);
+
+  useEffect(() => {
+    const maxStart = Math.max(0, globalDisplayLengthRef.current - visibleSlots);
+    setVirtualStart((prev) => Math.min(prev, maxStart));
+  }, [visibleSlots]);
 
   useEffect(() => {
     if (!pendingEvents.length || events.length >= COLUMN_FILL_TARGET) return;
@@ -2562,8 +2622,15 @@ const App = () => {
                 </div>
               </div>
             </div>
-            <div className="timeline">
-              {globalDisplay.map((event) => (
+            <div
+              className="timeline"
+              ref={timelineRef}
+              style={{
+                paddingTop: `${topSpacerHeight}px`,
+                paddingBottom: `${bottomSpacerHeight}px`
+              }}
+            >
+              {visibleEvents.map((event) => (
                 <PostCard key={event.id} event={event} onCardClick={openFocusedEvent} />
               ))}
               {showGlobalSkeleton && renderSkeletonCards("global")}
