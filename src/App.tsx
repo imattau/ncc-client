@@ -169,6 +169,8 @@ const failedVideoCache = new Set<string>();
 const failedAvatarCache = new Set<string>();
 
 const CACHE_BATCH_SIZE = 80;
+const PREFETCH_CACHE_LIMIT = 3;
+const PREFETCH_THRESHOLD = 200;
 const FEED_INCREMENT = 20;
 
 const STAT_KEY_MAP: Record<NccDiscoveryType, keyof NccDiscoveryStats> = {
@@ -206,8 +208,25 @@ const FILTER_DEFINITIONS: { id: TimelineFilterId; label: string }[] = [
 
 const MAX_EVENTS_IN_MEMORY = 320;
 const MAX_INCOMING_QUEUE = 200;
+const MAX_HISTORIC_RELAYS = 3;
+const MAX_TAGS_PER_EVENT = 12;
+const TAG_WHITELIST = new Set(["e", "p", "#", "a", "r", "t"]);
 
 const clampEvents = (list: NostrEvent[]) => list.slice(0, MAX_EVENTS_IN_MEMORY);
+
+const sanitizeEventForMemory = (event: NostrEvent): NostrEvent => {
+  const { attachments, tags, relays, ...rest } = event;
+  const trimmedTags =
+    tags
+      ?.filter((tag) => Array.isArray(tag) && typeof tag[0] === "string" && TAG_WHITELIST.has(tag[0]))
+      .slice(0, MAX_TAGS_PER_EVENT) ?? undefined;
+  return {
+    ...rest,
+    attachments: attachments?.slice(0, 1),
+    tags: trimmedTags,
+    relays: relays?.slice(0, MAX_HISTORIC_RELAYS)
+  };
+};
 
 const App = () => {
   const { connected, refresh } = useNccClient();
@@ -335,6 +354,9 @@ const App = () => {
   const commitScheduledRef = useRef(false);
   const queueFlushScheduledRef = useRef(false);
   const queueFlushTimeoutRef = useRef<number | null>(null);
+  const prefetchedRowsRef = useRef(new Map<number, NostrEvent[]>());
+  const prefetchInProgressRef = useRef(new Set<number>());
+  const lastScrollYRef = useRef(0);
 
   const processIncomingBatch = useCallback(() => {
     queueFlushScheduledRef.current = false;
@@ -442,6 +464,40 @@ const App = () => {
     };
   }, [events, localCacheLimit, indexedDbCacheLimit]);
 
+  const trimPrefetchCache = useCallback(() => {
+    const cache = prefetchedRowsRef.current;
+    while (cache.size > PREFETCH_CACHE_LIMIT) {
+      const oldestKey = cache.keys().next().value;
+      if (oldestKey === undefined) break;
+      cache.delete(oldestKey);
+    }
+  }, []);
+
+  const schedulePrefetchCacheRow = useCallback(
+    (offset: number) => {
+      if (!hasMoreCacheEventsRef.current || offset >= indexedDbCacheLimit) return;
+      const normalizedOffset = Math.max(0, offset);
+      if (
+        prefetchedRowsRef.current.has(normalizedOffset) ||
+        prefetchInProgressRef.current.has(normalizedOffset)
+      ) {
+        return;
+      }
+      prefetchInProgressRef.current.add(normalizedOffset);
+      void readCachedEvents(CACHE_BATCH_SIZE, normalizedOffset)
+        .then((batch) => {
+          if (!batch.length) return;
+          const sanitized = batch.map((event) => sanitizeEventForMemory(event));
+          prefetchedRowsRef.current.set(normalizedOffset, sanitized);
+          trimPrefetchCache();
+        })
+        .finally(() => {
+          prefetchInProgressRef.current.delete(normalizedOffset);
+        });
+    },
+    [indexedDbCacheLimit, trimPrefetchCache]
+  );
+
   const loadNextCacheBatch = useCallback(async () => {
     if (typeof window === "undefined") return;
     if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
@@ -452,16 +508,26 @@ const App = () => {
     }
     isLoadingCacheRef.current = true;
     setIsLoadingMoreCache(true);
-    const batch = await readCachedEvents(CACHE_BATCH_SIZE, cacheLoadedRef.current);
+    const offset = cacheLoadedRef.current;
+    let batch: NostrEvent[] = [];
+    const prefetched = prefetchedRowsRef.current.get(offset);
+    if (prefetched) {
+      batch = prefetched;
+      prefetchedRowsRef.current.delete(offset);
+    } else {
+      const fetched = await readCachedEvents(CACHE_BATCH_SIZE, offset);
+      batch = fetched.map((event) => sanitizeEventForMemory(event));
+    }
     cacheLoadedRef.current += batch.length;
-      setEvents((prev) => {
-        const pool = new Map<string, NostrEvent>();
-        prev.forEach((event) => pool.set(event.id, event));
-        batch.forEach((event) => pool.set(event.id, event));
-        const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
-        return clampEvents(merged);
-      });
-    setGlobalLimit((prev) => Math.min(prev + CACHE_BATCH_SIZE, indexedDbCacheLimit));
+    setEvents((prev) => {
+      const pool = new Map<string, NostrEvent>();
+      prev.forEach((event) => pool.set(event.id, event));
+      batch.forEach((event) => pool.set(event.id, event));
+      const merged = Array.from(pool.values()).sort((a, b) => b.created_at - a.created_at);
+      return clampEvents(merged);
+    });
+    setGlobalLimit((prev) => Math.min(prev + batch.length, indexedDbCacheLimit));
+    void schedulePrefetchCacheRow(cacheLoadedRef.current);
     if (batch.length < CACHE_BATCH_SIZE || cacheLoadedRef.current >= indexedDbCacheLimit) {
       hasMoreCacheEventsRef.current = false;
       setHasMoreCacheEvents(false);
@@ -480,18 +546,28 @@ const App = () => {
 
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const threshold = 200;
+    const threshold = PREFETCH_THRESHOLD;
     const handleScroll = () => {
+      const scrollY = window.scrollY;
+      const direction = scrollY > lastScrollYRef.current ? "down" : "up";
+      lastScrollYRef.current = scrollY;
       if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
-      if (window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - threshold) {
+      const nearBottom = window.innerHeight + scrollY >= document.documentElement.scrollHeight - threshold;
+      if (nearBottom) {
         void loadNextCacheBatch();
+        return;
       }
+      const prefetchOffset =
+        direction === "down"
+          ? cacheLoadedRef.current
+          : Math.max(cacheLoadedRef.current - CACHE_BATCH_SIZE, 0);
+      schedulePrefetchCacheRow(prefetchOffset);
     };
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [loadNextCacheBatch]);
+  }, [loadNextCacheBatch, schedulePrefetchCacheRow]);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -638,7 +714,7 @@ const App = () => {
         return;
       }
 
-      incomingEventsRef.current.push(event);
+      incomingEventsRef.current.push(sanitizeEventForMemory(event));
       if (incomingEventsRef.current.length > MAX_INCOMING_QUEUE) {
         incomingEventsRef.current.splice(0, incomingEventsRef.current.length - MAX_INCOMING_QUEUE);
       }
@@ -1453,9 +1529,10 @@ const App = () => {
           remoteSearchCacheRef.current.events.add(eventId);
           const remoteEvent = await NostrService.fetchEvent(eventId);
           if (remoteEvent) {
+            const sanitizedEvent = sanitizeEventForMemory(mapNostrToolsEvent(remoteEvent));
             setEvents((prev) => {
-              if (prev.some((existing) => existing.id === remoteEvent.id)) return prev;
-              return clampEvents([mapNostrToolsEvent(remoteEvent), ...prev]);
+              if (prev.some((existing) => existing.id === sanitizedEvent.id)) return prev;
+              return clampEvents([sanitizedEvent, ...prev]);
             });
           }
         }
@@ -1466,8 +1543,9 @@ const App = () => {
             setEvents((prev) => {
               const deduped = [...prev];
               for (const remoteEvent of remoteEvents) {
-                if (deduped.some((existing) => existing.id === remoteEvent.id)) continue;
-                deduped.unshift(mapNostrToolsEvent(remoteEvent));
+                const sanitizedEvent = sanitizeEventForMemory(mapNostrToolsEvent(remoteEvent));
+                if (deduped.some((existing) => existing.id === sanitizedEvent.id)) continue;
+                deduped.unshift(sanitizedEvent);
               }
               return clampEvents(deduped);
             });
@@ -1480,8 +1558,9 @@ const App = () => {
             setEvents((prev) => {
               const deduped = [...prev];
               for (const remoteEvent of remoteEvents) {
-                if (deduped.some((existing) => existing.id === remoteEvent.id)) continue;
-                deduped.unshift(mapNostrToolsEvent(remoteEvent));
+                const sanitizedEvent = sanitizeEventForMemory(mapNostrToolsEvent(remoteEvent));
+                if (deduped.some((existing) => existing.id === sanitizedEvent.id)) continue;
+                deduped.unshift(sanitizedEvent);
               }
               return clampEvents(deduped);
             });
@@ -1819,7 +1898,8 @@ const App = () => {
       attachments
     };
 
-    setEvents((prev) => [newEvent, ...prev]);
+    const sanitizedNewEvent = sanitizeEventForMemory(newEvent);
+    setEvents((prev) => [sanitizedNewEvent, ...prev]);
     setDraft({ content: "", type: draft.type });
     setAttachedFile(null);
     try {
