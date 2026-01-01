@@ -29,12 +29,19 @@ export async function publishEvent(event: NostrToolsEvent) {
   await client.publish(DEFAULT_RELAYS, event);
 }
 
+type Ncc06Module = {
+  listRelays?: () => string[];
+  preferredRelays?: () => string[];
+};
+
+const ncc06Module = ncc06 as unknown as Ncc06Module;
+
 export async function fetchRelayList() {
-  if (typeof (ncc06 as any)?.listRelays === "function") {
-    return (ncc06 as any).listRelays();
+  if (typeof ncc06Module.listRelays === "function") {
+    return ncc06Module.listRelays();
   }
-  if (typeof (ncc06 as any)?.preferredRelays === "function") {
-    return (ncc06 as any).preferredRelays();
+  if (typeof ncc06Module.preferredRelays === "function") {
+    return ncc06Module.preferredRelays();
   }
   return DEFAULT_RELAYS;
 }

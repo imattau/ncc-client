@@ -1,5 +1,5 @@
 import { SimplePool, type Filter, type Event as NostrToolsEvent } from "nostr-tools";
-import { RelayWorkerRequest, RelayWorkerResponse } from "./relayWorker.types";
+import { RelayWorkerRequest } from "./relayWorker.types";
 import type { NostrEvent } from "../types/events";
 import { isNccDiscoveryKind } from "../utils/nccDiscovery";
 
@@ -218,6 +218,6 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
       scheduleSubscriptions();
       break;
     default:
-      postMessage({ type: "error", message: `Unknown worker command: ${(data as any).type}` });
-  }
-});
+      postMessage({ type: "error", message: `Unknown worker command: ${data.type}` });
+    }
+  });
