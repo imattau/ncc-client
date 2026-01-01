@@ -1288,7 +1288,8 @@ body {
 .timeline-card .actions {
   display: flex;
   justify-content: flex-start;
-  gap: 1.5rem;
+  flex-wrap: wrap;
+  gap: 0.75rem;
   margin-top: 1.25rem;
   padding-top: 0.75rem;
   border-top: 1px solid rgba(255, 255, 255, 0.05);
@@ -1307,6 +1308,8 @@ body {
   font-weight: 500;
   transition: all 0.2s ease;
   border-radius: 0.6rem;
+  min-width: 0;
+  flex: 1 1 auto;
 }
 
 .timeline-card .actions button:hover {
@@ -1332,6 +1335,10 @@ body {
   width: 18px;
   height: 18px;
   stroke-width: 2;
+}
+
+.timeline-card .actions button span {
+  min-width: 0;
 }
 
 .post-form {
