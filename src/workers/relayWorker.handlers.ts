@@ -3,6 +3,7 @@ import type { NostrEvent } from "../types/events";
 export interface RelayWorkerStatus {
   relays: string[];
   connected: boolean;
+  stats?: Record<string, { eventCount: number }>;
 }
 
 export interface RelayWorkerHandlers {

@@ -7,6 +7,7 @@ const pool = new SimplePool();
 let subscriptions: ReturnType<typeof pool.subscribe>[] = [];
 let currentRelays: string[] = [];
 const seenIds = new Set<string>();
+const fingerprintSet = new Set<string>();
 const scheduledTimeouts: number[] = [];
 const relayStats: Record<string, { eventCount: number }> = {};
 const THROTTLE_INTERVAL_MS = 250;
@@ -56,6 +57,12 @@ const handleEvent = (event: NostrToolsEvent) => {
     return;
   }
 
+  const tagsKey = event.tags?.map((tag) => tag.join(":")).join("|") ?? "";
+  const fingerprint = `${event.pubkey}:${event.kind}:${event.content}:${tagsKey}`;
+  if (fingerprintSet.has(fingerprint)) {
+    return;
+  }
+
   if (seenIds.has(event.id)) {
     return;
   }
@@ -63,6 +70,7 @@ const handleEvent = (event: NostrToolsEvent) => {
   const totalKey = "total";
   relayStats[totalKey] = { eventCount: (relayStats[totalKey]?.eventCount ?? 0) + 1 };
 
+  fingerprintSet.add(fingerprint);
   seenIds.add(event.id);
   const mapped = mapEvent(event);
   dispatchEvent(mapped);
@@ -140,11 +148,14 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
   switch (data.type) {
     case "init":
       currentRelays = data.relays;
+      seenIds.clear();
+      fingerprintSet.clear();
       scheduleSubscriptions();
       break;
     case "updateRelays":
       currentRelays = data.relays;
       seenIds.clear();
+      fingerprintSet.clear();
       scheduleSubscriptions();
       break;
     case "fetch":
@@ -156,11 +167,13 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
     case "updateFilters":
       extraFilters = data.filters ?? [];
       seenIds.clear();
+      fingerprintSet.clear();
       scheduleSubscriptions();
       break;
     case "updateBaseFilters":
       baseFilters = data.filters ?? [];
       seenIds.clear(); // Clear seen IDs as filters have changed significantly
+      fingerprintSet.clear();
       scheduleSubscriptions();
       break;
     default:

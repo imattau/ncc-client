@@ -38,6 +38,8 @@ import {
   type NccDiscoveryStats,
   type NccDiscoveryType
 } from "./utils/nccDiscovery";
+import { cacheEvents, readCachedEvents } from "./utils/eventCache";
+import type { RelayWorkerStatus } from "./workers/relayWorker.handlers";
 
 const canonicalizePubkey = (value?: string | null) => {
   if (!value) return null;
@@ -61,6 +63,8 @@ const FOLLOWING_AUTHORS = ["@alice", "@nate", "@lena"];
 const USER_PRIVATE_KEY = generateSecretKey();
 const USER_PUBLIC_KEY = getPublicKey(USER_PRIVATE_KEY);
 const COLUMN_FILL_TARGET = 200;
+const LOCAL_STORAGE_CACHE_LIMIT = 100;
+const INDEXED_DB_CACHE_LIMIT = 200;
 const CACHED_EVENTS_KEY = "ncc-client-cached-events";
 
 const SERVICE_ID = "ncc-client-demo";
@@ -225,6 +229,10 @@ const App = () => {
     return window.matchMedia("(max-width: 960px)").matches;
   });
   const searchManagerRef = useRef<SearchManager>();
+  const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
+  const relayEventCountLabel = relayStatus
+    ? relayStatus.stats?.total?.eventCount ?? 0
+    : "waiting…";
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
   }
@@ -325,12 +333,36 @@ const App = () => {
   useEffect(() => {
     if (typeof window === "undefined") return;
     try {
-      // Cache only the most recent 100 events to avoid exceeding localStorage limits
-      window.localStorage.setItem(CACHED_EVENTS_KEY, JSON.stringify(events.slice(0, 100)));
+      // Cache only the most recent LOCAL_STORAGE_CACHE_LIMIT events to avoid exceeding localStorage limits
+      window.localStorage.setItem(
+        CACHED_EVENTS_KEY,
+        JSON.stringify(events.slice(0, LOCAL_STORAGE_CACHE_LIMIT))
+      );
     } catch {
       // ignore persistence failures
     }
+    void cacheEvents(events.slice(0, INDEXED_DB_CACHE_LIMIT));
   }, [events]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    let mounted = true;
+    void (async () => {
+      const cached = await readCachedEvents(INDEXED_DB_CACHE_LIMIT);
+      if (!mounted || !cached.length) return;
+      setEvents((prev) => {
+        const existingIds = new Set(prev.map((event) => event.id));
+        const merged = [
+          ...cached.filter((event) => !existingIds.has(event.id)),
+          ...prev
+        ];
+        return merged.slice(0, INDEXED_DB_CACHE_LIMIT);
+      });
+    })();
+    return () => {
+      mounted = false;
+    };
+  }, []);
 
   useEffect(() => {
     let mounted = true;
@@ -922,6 +954,10 @@ const App = () => {
     applyDeletions(ids);
   }, [applyDeletions]);
 
+  const handleWorkerStatus = useCallback((status: RelayWorkerStatus) => {
+    setRelayStatus(status);
+  }, []);
+
   const followingAuthors = useMemo(
     () => userManager.getEffectiveFollowing(authSession?.pubkey ?? undefined),
     [authSession?.pubkey, userFollowing, userManager]
@@ -1013,6 +1049,7 @@ const App = () => {
     {
       onEvent: handleWorkerEvent,
       onDeletion: handleWorkerDeletion,
+      onStatus: handleWorkerStatus,
       onError: handleWorkerError,
       onDiscovery: handleNccDiscovery
     },
@@ -1893,6 +1930,9 @@ const App = () => {
           >
             Relays: {managedRelays.length}
           </button>
+          <span className="relay-health">
+            Events: {relayEventCountLabel}
+          </span>
           <button type="button" onClick={triggerManualRefresh} disabled={isManualRefreshing}>
             {isManualRefreshing ? "Refreshing..." : "Refresh"}
           </button>

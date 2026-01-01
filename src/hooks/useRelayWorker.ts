@@ -35,7 +35,8 @@ export function useRelayWorker(
         case "status":
           handlerRef.current.onStatus?.({
             relays: payload.relays as string[],
-            connected: Boolean(payload.connected)
+            connected: Boolean(payload.connected),
+            stats: payload.stats as Record<string, { eventCount: number }>
           });
           break;
         case "error":
