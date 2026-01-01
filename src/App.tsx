@@ -1297,7 +1297,8 @@ const App = () => {
     for (const event of events) {
       const normalized = canonicalizePubkey(event.author);
       if (!normalized) continue;
-      if (profiles[normalized]) continue;
+      const existingProfile = profiles[normalized];
+      if (existingProfile && (existingProfile.name || existingProfile.display_name)) continue;
       if (pendingProfileRequestsRef.current.has(normalized)) continue;
       pendingProfileRequestsRef.current.add(normalized);
       queue.push(normalized);
