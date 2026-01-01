@@ -1818,7 +1818,7 @@ const App = () => {
         </div>
       </article>
     );
-  };
+  });
 
   const renderEmbeddedEvent = (event: NostrEvent) => {
     const referenced = getReferencedEvent(event);
