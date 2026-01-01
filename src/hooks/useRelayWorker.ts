@@ -3,7 +3,12 @@ import type { Filter } from "nostr-tools";
 import type { NostrEvent } from "../types/events";
 import type { RelayWorkerHandlers } from "../workers/relayWorker.handlers";
 
-export function useRelayWorker(relays: string[], handlers: RelayWorkerHandlers, extraFilters?: Filter[]) {
+export function useRelayWorker(
+  relays: string[],
+  handlers: RelayWorkerHandlers,
+  baseFilters: Filter[],
+  extraFilters?: Filter[]
+) {
   const workerRef = useRef<Worker>();
   const handlerRef = useRef(handlers);
 
@@ -56,6 +61,11 @@ export function useRelayWorker(relays: string[], handlers: RelayWorkerHandlers, 
   useEffect(() => {
     workerRef.current?.postMessage({ type: "updateRelays", relays });
   }, [relays]);
+
+  useEffect(() => {
+    if (!workerRef.current) return;
+    workerRef.current.postMessage({ type: "updateBaseFilters", filters: baseFilters ?? [] });
+  }, [baseFilters]);
 
   useEffect(() => {
     if (!workerRef.current) return;

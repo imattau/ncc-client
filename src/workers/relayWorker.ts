@@ -8,9 +8,11 @@ let subscriptions: ReturnType<typeof pool.subscribe>[] = [];
 let currentRelays: string[] = [];
 const seenIds = new Set<string>();
 const scheduledTimeouts: number[] = [];
+const relayStats: Record<string, { eventCount: number }> = {};
 const THROTTLE_INTERVAL_MS = 250;
+const IMMEDIATE_SUBSCRIPTIONS = 2; // Number of subscriptions to fire immediately
 
-const baseFilters: Filter[] = [
+let baseFilters: Filter[] = [
   { kinds: [1], limit: 60 },
   { kinds: [30023], limit: 40 },
   { kinds: [0], limit: 80 },
@@ -58,6 +60,9 @@ const handleEvent = (event: NostrToolsEvent) => {
     return;
   }
 
+  const totalKey = "total";
+  relayStats[totalKey] = { eventCount: (relayStats[totalKey]?.eventCount ?? 0) + 1 };
+
   seenIds.add(event.id);
   const mapped = mapEvent(event);
   dispatchEvent(mapped);
@@ -85,16 +90,22 @@ const scheduleSubscriptions = () => {
   postStatus(true);
   const filtersToUse = buildFilters();
   filtersToUse.forEach((filter, index) => {
+    // Calculate delay: first IMMEDIATE_SUBSCRIPTIONS are 0ms, then throttled
+    const delay = index < IMMEDIATE_SUBSCRIPTIONS ? 0 : (index - IMMEDIATE_SUBSCRIPTIONS + 1) * THROTTLE_INTERVAL_MS;
     const timeout = self.setTimeout(() => {
       try {
         const sub = pool.subscribe(currentRelays, filter, {
-          onevent: handleEvent
+          onevent: (event) => {
+            // Track per-relay stats if possible. Some versions of SimplePool provide a second argument.
+            // Even if not directly provided in the signature, we can try to infer or at least track total.
+            handleEvent(event);
+          }
         });
         subscriptions.push(sub);
       } catch (err) {
         console.error("[RelayWorker] Subscribe error", err);
       }
-    }, index * THROTTLE_INTERVAL_MS);
+    }, delay);
     scheduledTimeouts.push(timeout);
   });
 };
@@ -114,8 +125,15 @@ const fetchEvent = (id: string) => {
 };
 
 const postStatus = (connected: boolean) => {
-  postMessage({ type: "status", relays: currentRelays, connected });
+  postMessage({ type: "status", relays: currentRelays, connected, stats: relayStats });
 };
+
+// Periodic status updates with stats
+self.setInterval(() => {
+  if (currentRelays.length > 0) {
+    postStatus(true);
+  }
+}, 5000);
 
 self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
   const data = event.data;
@@ -138,6 +156,11 @@ self.addEventListener("message", (event: MessageEvent<RelayWorkerRequest>) => {
     case "updateFilters":
       extraFilters = data.filters ?? [];
       seenIds.clear();
+      scheduleSubscriptions();
+      break;
+    case "updateBaseFilters":
+      baseFilters = data.filters ?? [];
+      seenIds.clear(); // Clear seen IDs as filters have changed significantly
       scheduleSubscriptions();
       break;
     default:

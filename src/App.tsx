@@ -61,6 +61,7 @@ const FOLLOWING_AUTHORS = ["@alice", "@nate", "@lena"];
 const USER_PRIVATE_KEY = generateSecretKey();
 const USER_PUBLIC_KEY = getPublicKey(USER_PRIVATE_KEY);
 const COLUMN_FILL_TARGET = 200;
+const CACHED_EVENTS_KEY = "ncc-client-cached-events";
 
 const SERVICE_ID = "ncc-client-demo";
 
@@ -142,6 +143,14 @@ const INITIAL_QR_STATE: QrState = {
   secret: null
 };
 
+const INITIAL_BASE_FILTERS: Filter[] = [
+  { kinds: [1], limit: 60 },
+  { kinds: [30023], limit: 40 },
+  { kinds: [0], limit: 80 },
+  { kinds: [6, 7], limit: 100 },
+  { kinds: [30058, 30059, 30060, 30061], limit: 50 }
+];
+
 const App = () => {
   const { connected, refresh } = useNccClient();
   const { service: discovery, status: discoveryStatus, error: discoveryError } = useNcc02Discovery(
@@ -150,7 +159,10 @@ const App = () => {
   );
   const userManagerRef = useRef<UserManager>();
   if (!userManagerRef.current) {
-    userManagerRef.current = new UserManager({ baseFollowing: FOLLOWING_AUTHORS });
+    userManagerRef.current = new UserManager({
+      baseFollowing: FOLLOWING_AUTHORS,
+      profileCacheSize: 512
+    });
   }
   const userManager = userManagerRef.current;
   const relayManagerRef = useRef<RelayManager>();
@@ -159,7 +171,15 @@ const App = () => {
   }
   const relayManager = relayManagerRef.current;
   const [managedRelays, setManagedRelays] = useState<string[]>(() => relayManager.getRelays());
-  const [events, setEvents] = useState<NostrEvent[]>([]);
+  const [events, setEvents] = useState<NostrEvent[]>(() => {
+    if (typeof window === "undefined") return [];
+    try {
+      const raw = window.localStorage.getItem(CACHED_EVENTS_KEY);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
+  });
   const [mutedAuthors, setMutedAuthors] = useState<string[]>(() => userManager.getMutedAuthors());
   const [likedEvents, setLikedEvents] = useState<string[]>([]);
   const [repostedEvents, setRepostedEvents] = useState<string[]>([]);
@@ -301,6 +321,16 @@ const App = () => {
     const normalized = NostrService.parsePubkeyFromInput(authSession.pubkey);
     return normalized ?? authSession.pubkey.toLowerCase();
   }, [authSession?.pubkey]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    try {
+      // Cache only the most recent 100 events to avoid exceeding localStorage limits
+      window.localStorage.setItem(CACHED_EVENTS_KEY, JSON.stringify(events.slice(0, 100)));
+    } catch {
+      // ignore persistence failures
+    }
+  }, [events]);
 
   useEffect(() => {
     let mounted = true;
@@ -907,21 +937,30 @@ const App = () => {
     return Array.from(normalized);
   }, [followingAuthors]);
 
-  const feedFilters = useMemo<Filter[]>(() => {
-    if (!isSignedIn || !followingAuthorsHex.length) return [];
+  const [baseFiltersToWorker, setBaseFiltersToWorker] = useState<Filter[]>(INITIAL_BASE_FILTERS);
+
+  useEffect(() => {
+    if (!isSignedIn || !followingAuthorsHex.length) {
+      setBaseFiltersToWorker(INITIAL_BASE_FILTERS); // Reset to initial if not signed in or no following
+      return;
+    }
     const twoWeeksAgo = Math.floor(Date.now() / 1000) - (14 * 24 * 60 * 60);
-    return [
+    const newBaseFilters: Filter[] = [
       {
         authors: followingAuthorsHex,
         kinds: [0, 1, 30023],
         since: twoWeeksAgo,
         limit: 200
-      }
+      },
+      // Default filters from relayWorker.ts that are not covered by feed filters for following
+      { kinds: [6, 7], limit: 100 },
+      { kinds: [30058, 30059, 30060, 30061], limit: 50 }
     ];
+    setBaseFiltersToWorker(newBaseFilters);
   }, [isSignedIn, followingAuthorsHex]);
 
-  const combinedFilters = useMemo(() => {
-    const filters = [...authFilters, ...feedFilters];
+  const extraFiltersToWorker = useMemo(() => {
+    const filters = [...authFilters];
     if (activeThreadId) {
       filters.push({
         kinds: [1],
@@ -930,7 +969,7 @@ const App = () => {
       });
     }
     return filters;
-  }, [authFilters, feedFilters, activeThreadId]);
+  }, [authFilters, activeThreadId]);
 
   const openThread = useCallback((eventId: string) => {
     setActiveThreadId(eventId);
@@ -977,15 +1016,16 @@ const App = () => {
       onError: handleWorkerError,
       onDiscovery: handleNccDiscovery
     },
-    combinedFilters
+    baseFiltersToWorker,
+    extraFiltersToWorker
   );
 
-      const fetchReferencedEvent = useCallback(
-        (eventId: string) => {
-          requestReferencedEvent(eventId);
-        },
-        [requestReferencedEvent]
-      );
+  const fetchReferencedEvent = useCallback(
+    (eventId: string) => {
+      requestReferencedEvent(eventId);
+    },
+    [requestReferencedEvent]
+  );
 
   const postRenderer = useMemo(
     () =>
