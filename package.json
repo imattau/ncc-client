@@ -7,6 +7,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc && vite build",
+    "lint": "eslint \"src/**/*.{ts,tsx}\"",
     "preview": "vite preview",
     "test": "vitest run"
   },
@@ -23,6 +24,11 @@
     "react-dom": "^18.0.0"
   },
   "devDependencies": {
+    "@typescript-eslint/eslint-plugin": "^7.7.0",
+    "@typescript-eslint/parser": "^7.7.0",
+    "eslint": "^9.8.0",
+    "eslint-plugin-react": "^7.34.0",
+    "eslint-plugin-react-hooks": "^4.6.0",
     "@types/marked": "^4.0.10",
     "@types/qrcode": "^1.5.6",
     "@types/react": "^18.0.0",
