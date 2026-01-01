@@ -40,6 +40,7 @@ import {
 } from "./utils/nccDiscovery";
 import { cacheEvents, readCachedEvents } from "./utils/eventCache";
 import type { RelayWorkerStatus } from "./workers/relayWorker.handlers";
+import { StatusBar } from "./components/StatusBar";
 
 const canonicalizePubkey = (value?: string | null) => {
   if (!value) return null;
@@ -275,11 +276,6 @@ const App = () => {
   });
   const searchManagerRef = useRef<SearchManager>();
   const [relayStatus, setRelayStatus] = useState<RelayWorkerStatus | null>(null);
-  const relayEventStats = relayStatus?.stats?.total;
-  const relayEventCountLabel = relayEventStats
-    ? `${relayEventStats.eventCount} (${relayEventStats.dropCount} dropped)`
-    : "waiting…";
-  const showRateLimitAlert = Boolean(relayEventStats?.dropCount);
   if (!searchManagerRef.current) {
     searchManagerRef.current = new SearchManager();
   }
@@ -2052,30 +2048,15 @@ const App = () => {
             <span className="sr-only">Open search</span>
           </button>
         </div>
-        <div className="status-chip">
-          <span>{connected ? "Online" : "Offline"}</span>
-          <button
-            type="button"
-            className="relay-pill"
-            aria-expanded={isRelayModalOpen}
-            onClick={() => {
-              setIsRelayModalOpen((prev) => !prev);
-            }}
-          >
-            Relays: {managedRelays.length}
-          </button>
-          <span className="relay-health">
-            Events: {relayEventCountLabel}
-          </span>
-          <button type="button" onClick={triggerManualRefresh} disabled={isManualRefreshing}>
-            {isManualRefreshing ? "Refreshing..." : "Refresh"}
-          </button>
-        </div>
-        {showRateLimitAlert && (
-          <div className="status-alert">
-            Worker skipped {relayEventStats?.dropCount ?? 0} repeated events to protect the feed.
-          </div>
-        )}
+        <StatusBar
+          connected={connected}
+          managedRelays={managedRelays}
+          relayStatus={relayStatus}
+          isRelayModalOpen={isRelayModalOpen}
+          setIsRelayModalOpen={setIsRelayModalOpen}
+          isManualRefreshing={isManualRefreshing}
+          triggerManualRefresh={triggerManualRefresh}
+        />
       </header>
 
       <section className="filter-panel">

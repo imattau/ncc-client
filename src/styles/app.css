@@ -451,6 +451,14 @@ body {
   font-size: 0.85rem;
 }
 
+.status-box {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  width: 100%;
+  padding: 0;
+}
+
 .status-chip {
   padding: 0.4rem 0.9rem;
   border-radius: 999px;
@@ -475,6 +483,11 @@ body {
   background: rgba(239, 68, 68, 0.08);
   color: #ffa3a3;
   font-size: 0.75rem;
+}
+
+.status-alert-muted {
+  background: rgba(59, 130, 246, 0.08);
+  color: #bfdbfe;
 }
 
 .pull-refresh {
