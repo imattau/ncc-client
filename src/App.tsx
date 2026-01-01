@@ -3,6 +3,7 @@ import {
   FormEvent,
   KeyboardEvent,
   SyntheticEvent,
+  memo,
   useCallback,
   useEffect,
   useMemo,
@@ -357,6 +358,8 @@ const App = () => {
   const prefetchedRowsRef = useRef(new Map<number, NostrEvent[]>());
   const prefetchInProgressRef = useRef(new Set<number>());
   const lastScrollYRef = useRef(0);
+  const scrollStateRef = useRef({ scrollY: 0, direction: "down" as "up" | "down" });
+  const scrollFrameRequestedRef = useRef(false);
 
   const processIncomingBatch = useCallback(() => {
     queueFlushScheduledRef.current = false;
@@ -544,30 +547,39 @@ const App = () => {
     void loadNextCacheBatch();
   }, [loadNextCacheBatch, indexedDbCacheLimit]);
 
+  const processScroll = useCallback(() => {
+    scrollFrameRequestedRef.current = false;
+    const { scrollY, direction } = scrollStateRef.current;
+    if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
+    const nearBottom = window.innerHeight + scrollY >= document.documentElement.scrollHeight - PREFETCH_THRESHOLD;
+    if (nearBottom) {
+      void loadNextCacheBatch();
+      return;
+    }
+    const prefetchOffset =
+      direction === "down"
+        ? cacheLoadedRef.current
+        : Math.max(cacheLoadedRef.current - CACHE_BATCH_SIZE, 0);
+    schedulePrefetchCacheRow(prefetchOffset);
+  }, [loadNextCacheBatch, schedulePrefetchCacheRow]);
+
   useEffect(() => {
     if (typeof window === "undefined") return;
-    const threshold = PREFETCH_THRESHOLD;
     const handleScroll = () => {
       const scrollY = window.scrollY;
       const direction = scrollY > lastScrollYRef.current ? "down" : "up";
+      scrollStateRef.current = { scrollY, direction };
       lastScrollYRef.current = scrollY;
-      if (!hasMoreCacheEventsRef.current || isLoadingCacheRef.current) return;
-      const nearBottom = window.innerHeight + scrollY >= document.documentElement.scrollHeight - threshold;
-      if (nearBottom) {
-        void loadNextCacheBatch();
-        return;
+      if (!scrollFrameRequestedRef.current) {
+        scrollFrameRequestedRef.current = true;
+        window.requestAnimationFrame(processScroll);
       }
-      const prefetchOffset =
-        direction === "down"
-          ? cacheLoadedRef.current
-          : Math.max(cacheLoadedRef.current - CACHE_BATCH_SIZE, 0);
-      schedulePrefetchCacheRow(prefetchOffset);
     };
     window.addEventListener("scroll", handleScroll, { passive: true });
     return () => {
       window.removeEventListener("scroll", handleScroll);
     };
-  }, [loadNextCacheBatch, schedulePrefetchCacheRow]);
+  }, [processScroll]);
 
   useEffect(() => {
     const observer = new IntersectionObserver(
@@ -2038,7 +2050,7 @@ const App = () => {
     isFocused?: boolean;
   };
 
-  const PostCard = ({ event, onCardClick, isFocused = false }: PostCardProps) => {
+  const PostCard = memo(({ event, onCardClick, isFocused = false }: PostCardProps) => {
     const replyCount = Array.from(eventsById.values()).filter(
       (item) => item.kind === 1 && item.tags?.some((t) => t[0] === "e" && t[1] === event.id)
     ).length;
