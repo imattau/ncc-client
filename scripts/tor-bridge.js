@@ -4,11 +4,12 @@ import http from 'http';
 
 // Configuration
 const BRIDGE_PORT = 3001;
+const BRIDGE_HOST = '127.0.0.1';
 const TOR_SOCKS_PORT = 9050; // Standard Tor port
 const TOR_HOST = '127.0.0.1';
 
-console.log(`\n🧅 NCC Tor Bridge starting...`);
-console.log(`   Listening at:  ws://0.0.0.0:${BRIDGE_PORT}`);
+console.log(`\n Onion NCC Tor Bridge starting...`);
+console.log(`   Listening at:  ws://${BRIDGE_HOST}:${BRIDGE_PORT}`);
 console.log(`   Tor SOCKS:     socks5h://${TOR_HOST}:${TOR_SOCKS_PORT}`);
 
 // Create HTTP server to upgrade requests
@@ -114,7 +115,7 @@ wss.on('connection', (clientWs, req, targetUrl) => {
   });
 });
 
-server.listen(BRIDGE_PORT, '0.0.0.0', () => {
-  console.log(`✅ Bridge Ready! Use 'ws://<host>:${BRIDGE_PORT}?target=ws://...onion'\n`);
+server.listen(BRIDGE_PORT, BRIDGE_HOST, () => {
+  console.log(`✅ Bridge Ready! Use 'ws://${BRIDGE_HOST}:${BRIDGE_PORT}?target=ws://...onion'\n`);
 });
 

@@ -23,7 +23,7 @@ const AuthContext = createContext<AuthContextType | undefined>(undefined);
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({
     pubkey: localStorage.getItem('ncc_pubkey'),
-    privkey: localStorage.getItem('ncc_privkey'),
+    privkey: sessionStorage.getItem('ncc_privkey'),
     method: (localStorage.getItem('ncc_method') as LoginMethod) || null,
     isLoading: false,
   });
@@ -119,14 +119,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = () => {
     setState({ pubkey: null, privkey: null, method: null, isLoading: false });
     localStorage.removeItem('ncc_pubkey');
-    localStorage.removeItem('ncc_privkey');
     localStorage.removeItem('ncc_method');
+    localStorage.removeItem('ncc_privkey'); // Cleanup old storage
+    sessionStorage.removeItem('ncc_privkey');
   };
 
   const persist = (method: LoginMethod, pubkey: string, privkey: string | null) => {
     localStorage.setItem('ncc_method', method);
     localStorage.setItem('ncc_pubkey', pubkey);
-    if (privkey) localStorage.setItem('ncc_privkey', privkey);
+    if (privkey) {
+        sessionStorage.setItem('ncc_privkey', privkey);
+    } else {
+        sessionStorage.removeItem('ncc_privkey');
+    }
   };
 
   return (

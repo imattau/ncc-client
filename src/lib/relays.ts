@@ -4,12 +4,20 @@ export const DEFAULT_RELAYS = [
   'wss://relay.primal.net',
 ];
 
+export interface RelayHealth {
+    url: string;
+    lastSeen: number;
+    status: 'online' | 'offline' | 'unknown';
+    supportsNCC: boolean;
+}
+
 export const RelayManager = {
   load(): string[] {
     const saved = localStorage.getItem('ncc_bootstrap_relays');
     if (saved === null) return DEFAULT_RELAYS;
     try {
-      return JSON.parse(saved);
+      const parsed = JSON.parse(saved);
+      return Array.isArray(parsed) ? parsed : DEFAULT_RELAYS;
     } catch (e) {
       return DEFAULT_RELAYS;
     }
@@ -28,6 +36,11 @@ export const RelayManager = {
 
   remove(url: string) {
     const current = this.load();
-    this.save(current.filter(u => u !== url));
+    const filtered = current.filter(u => u !== url);
+    this.save(filtered.length > 0 ? filtered : DEFAULT_RELAYS);
+  },
+
+  restoreDefaults() {
+      this.save(DEFAULT_RELAYS);
   }
 };

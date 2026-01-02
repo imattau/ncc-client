@@ -6,6 +6,8 @@ import { Discovery } from './components/Discovery';
 import { Feed } from './components/Feed';
 import { ServicePublisher } from './components/ServicePublisher';
 import { TrustExplorer } from './components/TrustExplorer';
+import { Inventory } from './components/Inventory';
+import { Settings } from './components/Settings';
 import { Globe, LogOut, Radio } from 'lucide-react';
 import clsx from 'clsx';
 
@@ -20,12 +22,28 @@ interface ActiveService {
 function Main() {
   const { pubkey, logout, method } = useAuth();
   const { tracked, findTracked } = useTracking();
-  const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'publish' | 'trust'>('discovery');
+  const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'publish' | 'trust' | 'inventory' | 'settings'>('discovery');
   const [activeRelay, setActiveRelay] = useState<string | null>(() => localStorage.getItem('ncc_active_relay'));
   const [currentService, setCurrentService] = useState<ActiveService | null>(() => {
       const saved = localStorage.getItem('ncc_active_service');
       return saved ? JSON.parse(saved) : null;
   });
+  const [bridgeOnline, setBridgeOnline] = useState<boolean | null>(null);
+
+  // Monitor Bridge Status
+  useEffect(() => {
+      const checkBridge = async () => {
+          try {
+              const ws = new WebSocket(`ws://${window.location.host}/bridge?target=ws://localhost:1`);
+              const timer = setTimeout(() => ws.close(), 2000);
+              ws.onopen = () => { clearTimeout(timer); setBridgeOnline(true); ws.close(); };
+              ws.onerror = () => { clearTimeout(timer); setBridgeOnline(false); };
+          } catch (e) { setBridgeOnline(false); }
+      };
+      checkBridge();
+      const interval = setInterval(checkBridge, 30000);
+      return () => clearInterval(interval);
+  }, []);
 
   const handleConnect = (url: string, serviceInfo?: { pubkey: string, id: string }) => {
     setActiveRelay(url);
@@ -114,6 +132,10 @@ function Main() {
           </a>
         </div>
         <div className="flex-none gap-4">
+           <div className={`badge badge-sm gap-1 hidden sm:flex ${bridgeOnline === true ? 'badge-success' : bridgeOnline === false ? 'badge-error' : 'badge-ghost'}`}>
+              <div className={`w-1.5 h-1.5 rounded-full ${bridgeOnline === true ? 'bg-success-content animate-pulse' : 'bg-base-content opacity-30'}`}></div>
+              {bridgeOnline === true ? 'Bridge' : 'Bridge Offline'}
+           </div>
            {activeRelay && (
               <div className="badge badge-success gap-2 hidden sm:flex">
                  <Radio className="w-3 h-3" />
@@ -163,6 +185,20 @@ function Main() {
           >
             Trust Explorer
           </a>
+          <a 
+             role="tab" 
+             className={clsx("tab", activeTab === 'inventory' && "tab-active")}
+             onClick={() => setActiveTab('inventory')}
+          >
+            My Inventory
+          </a>
+          <a 
+             role="tab" 
+             className={clsx("tab", activeTab === 'settings' && "tab-active")}
+             onClick={() => setActiveTab('settings')}
+          >
+            Settings
+          </a>
         </div>
 
         {/* Views */}
@@ -175,6 +211,8 @@ function Main() {
              : <ServicePublisher />
           )}
           {activeTab === 'trust' && <TrustExplorer />}
+          {activeTab === 'inventory' && <Inventory />}
+          {activeTab === 'settings' && <Settings />}
         </div>
 
       </div>
@@ -184,16 +222,19 @@ function Main() {
 
 import { TrackingProvider } from './context/TrackingContext';
 import { DiscoveryProvider } from './context/DiscoveryContext';
+import { WoTProvider } from './context/WoTContext';
 
 function App() {
   return (
     <AuthProvider>
       <NCCProvider>
-        <TrackingProvider>
-          <DiscoveryProvider>
-            <Main />
-          </DiscoveryProvider>
-        </TrackingProvider>
+        <WoTProvider>
+          <TrackingProvider>
+            <DiscoveryProvider>
+              <Main />
+            </DiscoveryProvider>
+          </TrackingProvider>
+        </WoTProvider>
       </NCCProvider>
     </AuthProvider>
   )

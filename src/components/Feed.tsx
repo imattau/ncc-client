@@ -13,6 +13,17 @@ interface UserProfile {
   about?: string;
 }
 
+// Simple HTML escaping helper
+const escapeHtml = (str: string) => {
+    return str.replace(/[&<>"']/g, (m) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    })[m] as string);
+};
+
 export function Feed({ relayUrl }: FeedProps) {
   const [events, setEvents] = useState<Event[]>([]);
   const [profiles, setProfiles] = useState<Record<string, UserProfile>>({});
@@ -257,9 +268,10 @@ export function Feed({ relayUrl }: FeedProps) {
           const name = profile?.display_name || profile?.name || ev.pubkey.slice(0, 8);
           
           const hasTtlTag = ev.tags.some((t: any) => t[0] === 'ttl');
+          const isPrivateTag = ev.tags.some((t: any) => t[0] === 'private' && t[1] === 'true');
           const hasExpTag = ev.tags.some((t: any) => t[0] === 'exp');
 
-          const isNcc05 = ev.kind === 30058 && hasTtlTag;
+          const isNcc05 = ev.kind === 30058 && (hasTtlTag || isPrivateTag);
           const isNcc02 = ev.kind === 30059 && hasExpTag;
           const isNccAttestation = ev.kind === 30060;
           const isNccRevocation = ev.kind === 30061;
@@ -285,7 +297,7 @@ export function Feed({ relayUrl }: FeedProps) {
                    {/* Content */}
                    <div className="flex-1 min-w-0">
                      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-1 gap-1">
-                       <div className="font-bold text-sm truncate text-primary pr-2">{name}</div>
+                       <div className="font-bold text-sm truncate text-primary pr-2" dangerouslySetInnerHTML={{ __html: escapeHtml(name) }}></div>
                        <div className="flex flex-wrap items-center gap-1">
                           {isNcc05 && <div className="badge badge-primary badge-xs scale-90 sm:scale-100">NCC-05 LOCATOR</div>}
                           {isNcc02 && <div className="badge badge-secondary badge-xs scale-90 sm:scale-100">NCC-02 SERVICE</div>}
@@ -308,7 +320,7 @@ export function Feed({ relayUrl }: FeedProps) {
                      </div>
                      <div className="text-sm leading-relaxed mt-1">
                         {ev.kind === 1 ? (
-                            <p className="whitespace-pre-wrap break-words">{ev.content}</p>
+                            <p className="whitespace-pre-wrap break-words" dangerouslySetInnerHTML={{ __html: escapeHtml(ev.content) }}></p>
                         ) : (
                             <div className="bg-base-200/50 p-2 rounded border border-base-300 text-xs font-mono overflow-x-auto">
                                 <div className="font-bold mb-1 opacity-50 italic text-[10px]">
@@ -320,7 +332,7 @@ export function Feed({ relayUrl }: FeedProps) {
                                 </div>
                                 <div className="flex gap-2 mb-1">
                                     <span className="opacity-50">d-tag:</span>
-                                    <span className="font-bold">{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
+                                    <span className="font-bold" dangerouslySetInnerHTML={{ __html: escapeHtml(ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none') }}></span>
                                 </div>
                                 {isNcc05 && ev.content.startsWith('{') && (
                                     <div className="mt-1 space-y-1">
@@ -329,8 +341,8 @@ export function Feed({ relayUrl }: FeedProps) {
                                                 const data = JSON.parse(ev.content);
                                                 return data.endpoints?.map((ep: any, i: number) => (
                                                     <div key={i} className="text-[10px] bg-base-300/50 p-1 rounded border border-base-400/30 flex items-center justify-between">
-                                                        <span className="truncate flex-1">{ep.url || ep.uri}</span>
-                                                        <span className="badge badge-outline badge-xs opacity-50 ml-1">{ep.type}</span>
+                                                        <span className="truncate flex-1" dangerouslySetInnerHTML={{ __html: escapeHtml(ep.url || ep.uri) }}></span>
+                                                        <span className="badge badge-outline badge-xs opacity-50 ml-1" dangerouslySetInnerHTML={{ __html: escapeHtml(ep.type) }}></span>
                                                     </div>
                                                 ));
                                             } catch(e) { return null; }
@@ -339,7 +351,7 @@ export function Feed({ relayUrl }: FeedProps) {
                                 )}
                                 <div className="opacity-70 mt-1 truncate max-w-full">
                                     <span className="opacity-50 mr-1">Content:</span>
-                                    {ev.content.slice(0, 80)}{ev.content.length > 80 && '...'}
+                                    <span dangerouslySetInnerHTML={{ __html: escapeHtml(ev.content.slice(0, 80)) }}></span>{ev.content.length > 80 && '...'}
                                 </div>
                             </div>
                         )}

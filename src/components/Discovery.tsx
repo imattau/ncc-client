@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
@@ -5,6 +6,20 @@ import { useDiscovery } from '../context/DiscoveryContext';
 import { nip19, nip44 } from 'nostr-tools';
 import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
 import { RelayManager } from '../lib/relays';
+import clsx from 'clsx';
+
+import { useWoT } from '../context/WoTContext';
+
+// Simple HTML escaping helper
+const escapeHtml = (str: string) => {
+    return str.replace(/[&<"']/g, (m) => ({
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#039;'
+    })[m] as string);
+};
 
 interface DiscoveryProps {
   onConnect: (url: string, serviceInfo?: { pubkey: string, id: string }) => void;
@@ -14,6 +29,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const { ncc02Resolver, pool } = useNCC();
   const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
   const { trackService, isTracked, untrackService } = useTracking();
+  const { isFollowing } = useWoT();
   
   const {
     pubkeyInput, setPubkeyInput,
@@ -27,6 +43,42 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     decryptedPayloads, setDecryptedPayloads,
     showExpired, setShowExpired
   } = useDiscovery();
+
+  const [probing, setProbing] = useState<Record<string, number | 'error' | 'loading'>>({});
+  const [wotOnly, setWotOnly] = useState(false);
+
+  const probeEndpoint = async (url: string) => {
+      setProbing((prev: any) => ({ ...prev, [url]: 'loading' }));
+      const start = Date.now();
+      
+      let targetUrl = url;
+      if (url.includes('.onion')) {
+          targetUrl = `ws://${window.location.host}/bridge?target=${encodeURIComponent(url)}`;
+      }
+
+      try {
+          // Attempt a simple WebSocket connection to test reachability
+          const ws = new WebSocket(targetUrl);
+          const timeout = setTimeout(() => ws.close(), 10000);
+          
+          await new Promise((resolve, reject) => {
+              ws.onopen = () => {
+                  clearTimeout(timeout);
+                  ws.close();
+                  resolve(true);
+              };
+              ws.onerror = (e) => {
+                  clearTimeout(timeout);
+                  reject(e);
+              };
+          });
+          
+          const latency = Date.now() - start;
+          setProbing((prev: any) => ({ ...prev, [url]: latency }));
+      } catch (e) {
+          setProbing((prev: any) => ({ ...prev, [url]: 'error' }));
+      }
+  };
 
   const isExpired = (ev: any) => {
       const now = Math.floor(Date.now() / 1000);
@@ -79,11 +131,30 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       } catch (e) { return pubkey.slice(0, 8); }
   };
   
-  const isTargetedToMe = (publisherPubkey: string) => {
+  const isTargetedToMe = (locEvent: any) => {
       if (!myPubkey) return false;
-      const profile = profiles[publisherPubkey];
-      if (!profile || !profile._tags) return false;
-      return profile._tags.some((t: string[]) => t[0] === 'privaterecipients' && t.includes(myPubkey));
+      
+      // 1. Check if I am a recipient in the decrypted payload (if already decrypted)
+      const dec = decryptedPayloads[locEvent.id];
+      if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
+
+      // 2. Check if I am in the author's Profile Whitelist (PoC Convention)
+      const profile = profiles[locEvent.pubkey];
+      if (profile && profile._tags) {
+          const whitelist = profile._tags.find((t: any) => t[0] === 'privaterecipients')?.slice(1) || [];
+          if (whitelist.includes(myPubkey)) return true;
+      }
+
+      // 3. Check if I am a recipient in the raw content (if it's a public record with a private list)
+      if (locEvent.content.startsWith('{')) {
+          try {
+              const data = JSON.parse(locEvent.content);
+              if (data.privaterecipients?.includes(myPubkey)) return true;
+          } catch(e) {}
+      }
+
+      // 4. Check if I am mentioned in the 'p' tags of the event (Standard Nostr targeted event)
+      return locEvent.tags.some((t: any) => t[0] === 'p' && t[1] === myPubkey);
   };
 
   const handleDecryptClick = async (ev: any) => {
@@ -291,6 +362,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                <input type="checkbox" className="toggle toggle-sm toggle-warning" checked={showExpired} onChange={e => setShowExpired(e.target.checked)} />
              </label>
           </div>
+          <div className="form-control">
+             <label className="cursor-pointer label justify-start gap-4">
+               <span className="label-text text-sm font-bold text-secondary">Network Only (WoT)</span> 
+               <input type="checkbox" className="toggle toggle-sm toggle-secondary" checked={wotOnly} onChange={e => setWotOnly(e.target.checked)} />
+             </label>
+          </div>
           <button className="btn btn-primary w-full" onClick={() => handleDiscover()} disabled={step === 'verifying' || step === 'resolving'}>
             {step !== 'idle' && step !== 'complete' && <span className="loading loading-spinner"></span>}
             Run Discovery
@@ -301,7 +378,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
         <div className="mt-4 bg-base-300 p-3 rounded-box font-mono text-[10px] max-h-32 overflow-y-auto">
            {logs.length === 0 && <span className="opacity-50">Idle...</span>}
-           {logs.map((log, i) => <div key={i} className="mb-1">{log}</div>)}
+           {logs.map((log, i) => <div key={i} className="mb-1" dangerouslySetInnerHTML={{ __html: escapeHtml(log) }}></div>)}
         </div>
 
         {rawEvents.length > 0 && (
@@ -316,15 +393,32 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                       const lastUpdate = Math.max(...events.map(e => e.created_at));
                       const lastUpdateStr = new Date(lastUpdate * 1000).toLocaleString();
 
-                      const threads: Record<string, { service?: any, locators: any[] }> = {};
+                      const threads: Record<string, { service?: any, locators: any[], attestations: any[], revocations: any[] }> = {};
                       events.forEach(ev => {
                           const baseId = (ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown').replace(/-locator$/, '').replace(/-loc$/, '');
-                          if (!threads[baseId]) threads[baseId] = { locators: [] };
+                          if (!threads[baseId]) threads[baseId] = { locators: [], attestations: [], revocations: [] };
+                          
                           if (ev.kind === 30059) threads[baseId].service = ev;
-                          else threads[baseId].locators.push(ev);
+                          else if (ev.kind === 30058) threads[baseId].locators.push(ev);
+                          else if (ev.kind === 30060) threads[baseId].attestations.push(ev);
+                          else if (ev.kind === 30061) threads[baseId].revocations.push(ev);
                       });
 
-                      const activeKeys = Object.keys(threads).sort().filter(k => showExpired || (threads[k].service && !isExpired(threads[k].service)) || threads[k].locators.some(l => !isExpired(l)));
+                      const activeKeys = Object.keys(threads).sort().filter(k => {
+                          const t = threads[k];
+                          const passesExpiry = showExpired || (t.service && !isExpired(t.service)) || t.locators.some(l => !isExpired(l));
+                          if (!passesExpiry) return false;
+
+                          if (wotOnly) {
+                              // Is the author someone I follow?
+                              if (isFollowing(pubkey)) return true;
+                              // Has someone I follow attested to this service?
+                              if (t.attestations.some(a => isFollowing(a.pubkey))) return true;
+                              return false;
+                          }
+                          return true;
+                      });
+
                       if (activeKeys.length === 0) return null;
 
                       return (
@@ -332,10 +426,17 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                               <div className="card-body p-3">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-base-200">
                                       <div className="flex items-center gap-3 min-w-0">
-                                          <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span>{name.slice(0, 2).toUpperCase()}</span></div></div>
+                                          <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span dangerouslySetInnerHTML={{ __html: escapeHtml(name.slice(0, 2).toUpperCase()) }}></span></div></div>
                                           <div className="min-w-0">
-                                              <div className="font-bold text-sm truncate">{name}</div>
-                                              <div className="text-[9px] opacity-50 truncate">{npub}</div>
+                                              <div className="flex items-center gap-2">
+                                                  <div className="font-bold text-sm truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(name) }}></div>
+                                                  {(isFollowing(pubkey) || events.some(e => e.kind === 30060 && isFollowing(e.pubkey))) && (
+                                                      <div className="badge badge-secondary badge-xs gap-1">
+                                                          <ShieldCheck className="w-2 h-2" /> Network Trusted
+                                                      </div>
+                                                  )}
+                                              </div>
+                                              <div className="text-[9px] opacity-50 truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(npub) }}></div>
                                           </div>
                                       </div>
                                       <div className="text-[9px] opacity-40 font-mono text-right sm:text-left">
@@ -347,13 +448,32 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                           const t = threads[baseId];
                                           const isPrivate = t.service && !t.service.tags.find((tag: any) => tag[0] === 'u');
                                           const sExpired = t.service && isExpired(t.service);
+                                          const isRevoked = t.revocations.length > 0;
                                           const tracked = isTracked(pubkey, baseId);
+                                          
+                                          const followedAttestations = t.attestations.filter(a => isFollowing(a.pubkey));
+
                                           return (
                                               <div key={baseId} className="space-y-2">
                                                   <div className="flex items-center justify-between px-1">
-                                                      <div className="flex items-center gap-1 min-w-0">
-                                                          <span className="font-black text-[10px] uppercase opacity-70 truncate">Service: {baseId}</span>
-                                                          {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
+                                                      <div className="flex flex-col min-w-0">
+                                                          <div className="flex items-center gap-1">
+                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(baseId) }}></span></span>
+                                                              {isRevoked && <div className="badge badge-error badge-xs scale-75 font-bold">REVOKED</div>}
+                                                              {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
+                                                              {t.service && (() => {
+                                                                  try {
+                                                                      const content = JSON.parse(t.service.content);
+                                                                      if (content.v > 1) return <div className="badge badge-warning badge-xs scale-75" title="Newer protocol version detected">v{content.v} !</div>;
+                                                                  } catch(e) {}
+                                                                  return null;
+                                                              })()}
+                                                          </div>
+                                                          {followedAttestations.length > 0 && (
+                                                              <span className="text-[8px] text-secondary font-bold">
+                                                                  ✓ Trusted by {followedAttestations.length} in your network
+                                                              </span>
+                                                          )}
                                                       </div>
                                                       <div className="flex items-center gap-3">
                                                           {t.service && (
@@ -385,12 +505,22 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                       <div className="p-2 space-y-2">
                                                           {t.service?.tags.filter((tag: any) => tag[0] === 'u').map((tag: any, i: number) => (
                                                               <div key={i} className="flex items-center justify-between gap-2 p-2 bg-base-200/50 rounded-lg">
-                                                                  <span className="text-[9px] font-mono truncate flex-1">{tag[1]}</span>
-                                                                  <button className="btn btn-xs btn-secondary flex-shrink-0" onClick={() => handleConnect(tag[1], { pubkey, id: baseId })}>Connect</button>
+                                                                  <div className="flex flex-col min-w-0 flex-1">
+                                                                      <span className="text-[9px] font-mono truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(tag[1]) }}></span>
+                                                                      {probing[tag[1]] && (
+                                                                          <span className={clsx("text-[8px] font-bold", probing[tag[1]] === 'error' ? "text-error" : probing[tag[1]] === 'loading' ? "animate-pulse" : "text-success")}>
+                                                                              {probing[tag[1]] === 'loading' ? 'Probing...' : probing[tag[1]] === 'error' ? 'Offline' : `${probing[tag[1]]}ms`}
+                                                                          </span>
+                                                                      )}
+                                                                  </div>
+                                                                  <div className="flex items-center gap-1">
+                                                                      <button className="btn btn-xs btn-ghost" onClick={() => probeEndpoint(tag[1])}>Probe</button>
+                                                                      <button className="btn btn-xs btn-secondary flex-shrink-0" onClick={() => handleConnect(tag[1], { pubkey, id: baseId })}>Connect</button>
+                                                                  </div>
                                                               </div>
                                                           ))}
                                                           {t.locators.map(loc => {
-                                                              const targeted = isTargetedToMe(loc.pubkey);
+                                                              const targeted = isTargetedToMe(loc);
                                                               const isEnc = !loc.content.trim().startsWith('{');
                                                               const dec = decryptedPayloads[loc.id];
                                                               const lExp = isExpired(loc);
@@ -415,10 +545,20 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                                                           let u = ep.url || ep.uri; if (u && !u.includes('://')) u = u.includes('.onion') ? `ws://${u}` : `wss://${u}`;
                                                                                           const isR = u && (u.startsWith('ws') || u.startsWith('wss'));
                                                                                           return (
-                                                                                              <button key={j} className="btn btn-xs btn-primary w-full flex flex-col items-start h-auto py-2 gap-1" onClick={() => isR ? handleConnect(u, { pubkey, id: baseId }) : window.open(u, '_blank')}>
-                                                                                                  <div className="flex items-center gap-1 font-bold"> {ep.family==='onion'&&'🧅'} Connect {ep.type||(isR?'Relay':'Web')}</div>
-                                                                                                  <div className="text-[8px] opacity-70 truncate w-full">{u}</div>
-                                                                                              </button>
+                                                                                              <div key={j} className="flex flex-col gap-1">
+                                                                                                  <button className="btn btn-xs btn-primary w-full flex flex-col items-start h-auto py-2 gap-1" onClick={() => isR ? handleConnect(u, { pubkey, id: baseId }) : window.open(u, '_blank')}>
+                                                                                                      <div className="flex items-center gap-1 font-bold"> {ep.family==='onion'&&'🧅'} Connect <span dangerouslySetInnerHTML={{ __html: escapeHtml(ep.type||(isR?'Relay':'Web')) }}></span></div>
+                                                                                                      <div className="text-[8px] opacity-70 truncate w-full" dangerouslySetInnerHTML={{ __html: escapeHtml(u) }}></div>
+                                                                                                  </button>
+                                                                                                  <div className="flex items-center justify-between px-1">
+                                                                                                      <button className="text-[8px] link opacity-50" onClick={() => probeEndpoint(u)}>Probe Health</button>
+                                                                                                      {probing[u] && (
+                                                                                                          <span className={clsx("text-[8px] font-bold", probing[u] === 'error' ? "text-error" : probing[u] === 'loading' ? "animate-pulse" : "text-success")}>
+                                                                                                              {probing[u] === 'loading' ? 'Probing...' : probing[u] === 'error' ? 'Offline' : `${probing[u]}ms`}
+                                                                                                          </span>
+                                                                                                      )}
+                                                                                                  </div>
+                                                                                              </div>
                                                                                           );
                                                                                       })}
                                                                                       <pre className="text-[8px] bg-black text-green-500 p-2 rounded overflow-x-auto">{JSON.stringify(dec || loc, null, 2)}</pre>
@@ -447,7 +587,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           <div className="mt-6 p-4 bg-base-200 rounded-box border border-success flex flex-col gap-3">
              <div className="flex items-center gap-2">
                 <ShieldCheck className="text-success w-6 h-6 flex-shrink-0" />
-                <div className="min-w-0"><h4 className="font-bold text-xs">Target Resolved</h4><p className="text-[10px] opacity-70 truncate font-mono">{resolvedEndpoint.url || resolvedEndpoint.uri}</p></div>
+                <div className="min-w-0"><h4 className="font-bold text-xs">Target Resolved</h4><p className="text-[10px] opacity-70 truncate font-mono" dangerouslySetInnerHTML={{ __html: escapeHtml(resolvedEndpoint.url || resolvedEndpoint.uri) }}></p></div>
              </div>
              <button className="btn btn-success btn-sm w-full" onClick={() => handleConnect()}>Connect to Relay</button>
           </div>
