@@ -39,16 +39,25 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithNip07 = async () => {
     setState(prev => ({ ...prev, isLoading: true }));
     try {
+      // Simple retry to wait for injection
+      let attempts = 0;
+      while (typeof window.nostr === 'undefined' && attempts < 10) {
+          await new Promise(resolve => setTimeout(resolve, 100));
+          attempts++;
+      }
+
       if (typeof window.nostr === 'undefined') {
-        alert('Nostr extension not found!');
+        alert('Nostr extension not found! Make sure you have Alby, nos2x, or similar installed.');
+        setState(prev => ({ ...prev, isLoading: false }));
         return;
       }
+      
       const pubkey = await window.nostr.getPublicKey();
       setState({ pubkey, privkey: null, method: 'nip07', isLoading: false });
       persist('nip07', pubkey, null);
-    } catch (e) {
-      console.error(e);
-      alert('Login failed');
+    } catch (e: any) {
+      console.error("NIP-07 Login Error:", e);
+      alert('Login failed: ' + (e.message || "Unknown error"));
       setState(prev => ({ ...prev, isLoading: false }));
     }
   };
