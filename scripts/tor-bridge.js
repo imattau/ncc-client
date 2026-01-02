@@ -40,7 +40,7 @@ wss.on('connection', (clientWs, req, targetUrl) => {
   console.log(`[Bridge] Client connected. Opening tunnel to ${targetUrl}...`);
 
   // Connect to the Onion Relay via SOCKS Agent
-  const remoteWs = new WebSocket(targetUrl as string, { agent });
+  const remoteWs = new WebSocket(targetUrl, { agent });
 
   remoteWs.on('open', () => {
     console.log(`[Bridge] Tunnel established to ${targetUrl}`);
