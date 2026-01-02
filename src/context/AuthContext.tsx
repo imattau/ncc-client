@@ -1,5 +1,5 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
-import { nip19 } from 'nostr-tools';
+import { nip19, getPublicKey } from 'nostr-tools';
 
 // Types
 export type LoginMethod = 'nip07' | 'nsec' | 'readonly';
@@ -60,21 +60,15 @@ export function AuthProvider({ children }: { children: ReactNode }) {
         const { data } = nip19.decode(nsecOrHex);
         hex = data as string;
       }
-      // TODO: Derive pubkey from private key (need library helper or curve calc)
-      // nostr-tools v2 split this out. Let's assume user provides valid key for now
-      // or import getPublicKey from nostr-tools
-      import('nostr-tools').then(({ getPublicKey }) => {
-          // hexToBytes is usually in @noble/hashes/utils or exported by nostr-tools depending on version.
-          // nostr-tools v2 exports it directly often? Let's check imports.
-          // Actually, let's just use a simple hexToBytes function or import it.
-          // checking nostr-tools exports... let's assume it has a utility or use a custom one.
-          const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-          
-          const pubkey = getPublicKey(hexToBytes(hex));
-          setState({ pubkey, privkey: hex, method: 'nsec', isLoading: false });
-          persist('nsec', pubkey, hex);
-      });
+      
+      // Simple hexToBytes helper
+      const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+      
+      const pubkey = getPublicKey(hexToBytes(hex));
+      setState({ pubkey, privkey: hex, method: 'nsec', isLoading: false });
+      persist('nsec', pubkey, hex);
     } catch (e) {
+      console.error(e);
       alert('Invalid Private Key');
     }
   };
