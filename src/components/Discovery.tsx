@@ -246,6 +246,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                   return Object.entries(byPub).map(([pubkey, events]) => {
                       const name = getDisplayName(pubkey);
                       const npub = nip19.npubEncode(pubkey);
+                      const lastUpdate = Math.max(...events.map(e => e.created_at));
+                      const lastUpdateStr = new Date(lastUpdate * 1000).toLocaleString();
+
                       const threads: Record<string, { service?: any, locators: any[] }> = {};
                       events.forEach(ev => {
                           const baseId = (ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown').replace(/-locator$/, '').replace(/-loc$/, '');
@@ -260,11 +263,16 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                       return (
                           <div key={pubkey} className="card bg-base-100 border border-base-300 w-full overflow-hidden shadow-sm">
                               <div className="card-body p-3">
-                                  <div className="flex items-center gap-3 mb-3 pb-2 border-b border-base-200">
-                                      <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span>{name.slice(0, 2).toUpperCase()}</span></div></div>
-                                      <div className="min-w-0">
-                                          <div className="font-bold text-sm truncate">{name}</div>
-                                          <div className="text-[9px] opacity-50 truncate">{npub}</div>
+                                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-base-200">
+                                      <div className="flex items-center gap-3 min-w-0">
+                                          <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span>{name.slice(0, 2).toUpperCase()}</span></div></div>
+                                          <div className="min-w-0">
+                                              <div className="font-bold text-sm truncate">{name}</div>
+                                              <div className="text-[9px] opacity-50 truncate">{npub}</div>
+                                          </div>
+                                      </div>
+                                      <div className="text-[9px] opacity-40 font-mono text-right sm:text-left">
+                                          Last Update: {lastUpdateStr}
                                       </div>
                                   </div>
                                   <div className="space-y-4">
