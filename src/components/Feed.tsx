@@ -32,16 +32,39 @@ export function Feed({ relayUrl }: FeedProps) {
         commitTimerRef.current = null;
 
         setEvents(prev => {
-            const newEvents = [...prev];
+            let newEvents = [...prev];
             let changed = false;
+
             batch.forEach(ev => {
-                if (!newEvents.find(e => e.id === ev.id)) {
-                    newEvents.push(ev);
-                    changed = true;
+                // Parameterized Replaceable Events (30000-39999)
+                if (ev.kind >= 30000 && ev.kind < 40000) {
+                    const dTag = ev.tags.find(t => t[0] === 'd')?.[1] || '';
+                    const existingIdx = newEvents.findIndex(e => 
+                        e.pubkey === ev.pubkey && 
+                        e.kind === ev.kind && 
+                        (e.tags.find(t => t[0] === 'd')?.[1] || '') === dTag
+                    );
+
+                    if (existingIdx !== -1) {
+                        if (ev.created_at > newEvents[existingIdx].created_at) {
+                            newEvents[existingIdx] = ev;
+                            changed = true;
+                        }
+                    } else {
+                        newEvents.push(ev);
+                        changed = true;
+                    }
+                } else {
+                    // Regular Events (e.g. Kind 1)
+                    if (!newEvents.find(e => e.id === ev.id)) {
+                        newEvents.push(ev);
+                        changed = true;
+                    }
                 }
             });
+
             if (!changed) return prev;
-            return newEvents.sort((a, b) => b.created_at - a.created_at);
+            return [...newEvents].sort((a, b) => b.created_at - a.created_at);
         });
     }, 100);
   };
