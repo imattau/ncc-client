@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNCC } from '../context/NCCContext';
 import { Upload, Save } from 'lucide-react';
-import { DEFAULT_RELAYS } from '../lib/relays';
+import { RelayManager } from '../lib/relays';
 
 export function ServicePublisher() {
   const { privkey } = useAuth();
@@ -33,7 +33,7 @@ export function ServicePublisher() {
       };
 
       // Publish public record
-      await ncc05Publisher.publish(DEFAULT_RELAYS, privkey, payload, { public: true, identifier: 'addr' });
+      await ncc05Publisher.publish(RelayManager.load(), privkey, payload, { public: true, identifier: 'addr' });
       setSuccess('Service Published Successfully!');
     } catch (e: any) {
       console.error(e);

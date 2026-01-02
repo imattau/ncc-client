@@ -3,7 +3,7 @@ import { SimplePool } from 'nostr-tools';
 import { NCC05Resolver, NCC05Publisher } from 'ncc-05-js';
 import { NCC02Resolver } from 'ncc-02-js';
 import { pool } from '../lib/pool';
-import { DEFAULT_RELAYS } from '../lib/relays';
+import { RelayManager } from '../lib/relays';
 
 interface NCCContextType {
   ncc05Resolver: NCC05Resolver;
@@ -17,10 +17,11 @@ const NCCContext = createContext<NCCContextType | undefined>(undefined);
 export function NCCProvider({ children }: { children: React.ReactNode }) {
   
   const value = useMemo(() => {
+    const bootstrap = RelayManager.load();
     // NCC-05 init - strictly use bootstrap relays only
     const ncc05Resolver = new NCC05Resolver({ 
       pool, 
-      bootstrapRelays: DEFAULT_RELAYS,
+      bootstrapRelays: bootstrap,
       // Note: If the library supports a 'gossip: false' global toggle, we'd set it here.
       // Since it's passed in resolve() options, we ensure the UI call respects it.
     });
@@ -31,7 +32,7 @@ export function NCCProvider({ children }: { children: React.ReactNode }) {
     });
 
     // NCC-02 init - strictly use bootstrap relays only
-    const ncc02Resolver = new NCC02Resolver(DEFAULT_RELAYS, {
+    const ncc02Resolver = new NCC02Resolver(bootstrap, {
        pool
     });
 

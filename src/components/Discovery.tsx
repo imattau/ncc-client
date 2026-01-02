@@ -4,7 +4,7 @@ import { useTracking } from '../context/TrackingContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import { nip19, nip44 } from 'nostr-tools';
 import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
-import { DEFAULT_RELAYS } from '../lib/relays';
+import { RelayManager } from '../lib/relays';
 
 interface DiscoveryProps {
   onConnect: (url: string, serviceInfo?: { pubkey: string, id: string }) => void;
@@ -56,7 +56,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       const authors = [...new Set(events.map(e => e.pubkey))];
       if (authors.length === 0) return;
       try {
-          const profileEvents = await pool.querySync(DEFAULT_RELAYS, { kinds: [0], authors: authors });
+          const profileEvents = await pool.querySync(RelayManager.load(), { kinds: [0], authors: authors });
           const profileMap: Record<string, any> = {};
           profileEvents.forEach(ev => {
               try {
@@ -120,7 +120,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           const filter: any = { kinds: [30058, 30059, 30060, 30061], limit: 50 };
           if (serviceId) filter['#d'] = [serviceId];
           const events = await withTimeout(
-              pool.querySync(DEFAULT_RELAYS, filter), 
+              pool.querySync(RelayManager.load(), filter), 
               10000, 
               "Global search timed out after 10s"
           );
@@ -134,7 +134,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       
       // Query all NCC related kinds for this author
       const events = await withTimeout(
-          pool.querySync(DEFAULT_RELAYS, { 
+          pool.querySync(RelayManager.load(), { 
               kinds: [30058, 30059, 30060, 30061], 
               authors: [hex] 
           }),
@@ -259,7 +259,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
           if (signedEvent) {
               addLog(`✍️ Publishing Attestation for ${dTag}...`);
-              await pool.publish(DEFAULT_RELAYS, signedEvent);
+              await pool.publish(RelayManager.load(), signedEvent);
               alert("Attestation Published Successfully!");
           }
       } catch (e: any) {

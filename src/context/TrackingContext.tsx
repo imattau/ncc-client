@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
 import { useAuth } from './AuthContext';
 import { useNCC } from './NCCContext';
-import { DEFAULT_RELAYS } from '../lib/relays';
+import { RelayManager } from '../lib/relays';
 import { nip44 } from 'nostr-tools';
 
 interface TrackedService {
@@ -44,7 +44,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     
     // Subscribe to updates
     const sub = pool.subscribeMany(
-      DEFAULT_RELAYS,
+      RelayManager.load(),
       [{ kinds: [30058, 30059], authors: authors }] as any,
       {
         onevent(ev) {
