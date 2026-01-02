@@ -18,6 +18,7 @@ interface TrackingContextType {
   trackService: (pubkey: string, serviceId: string) => void;
   untrackService: (pubkey: string, serviceId: string) => void;
   isTracked: (pubkey: string, serviceId: string) => boolean;
+  findTracked: (pubkey: string, serviceId: string) => TrackedService | undefined;
 }
 
 const TrackingContext = createContext<TrackingContextType | undefined>(undefined);
@@ -55,7 +56,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     return () => {
       sub.close();
     };
-  }, [tracked.length]); // Re-sub if list changes (simple approach)
+  }, [tracked.length]); // Re-sub if list changes
 
   const handleEvent = async (ev: any) => {
     const dTag = ev.tags.find((t: any) => t[0] === 'd')?.[1];
@@ -87,7 +88,6 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
            // Attempt Auto-Decrypt if NSEC available
            if (privkey && !ev.content.trim().startsWith('{')) {
                try {
-                   // hexToBytes helper
                    const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
                    const key = nip44.getConversationKey(hexToBytes(privkey), ev.pubkey);
                    const decrypted = nip44.decrypt(ev.content, key);
@@ -129,8 +129,12 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     return tracked.some(t => t.pubkey === pubkey && t.serviceId === serviceId);
   };
 
+  const findTracked = (pubkey: string, serviceId: string) => {
+    return tracked.find(t => t.pubkey === pubkey && t.serviceId === serviceId);
+  };
+
   return (
-    <TrackingContext.Provider value={{ tracked, trackService, untrackService, isTracked }}>
+    <TrackingContext.Provider value={{ tracked, trackService, untrackService, isTracked, findTracked }}>
       {children}
     </TrackingContext.Provider>
   );

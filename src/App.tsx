@@ -9,15 +9,91 @@ import { TrustExplorer } from './components/TrustExplorer';
 import { Globe, LogOut, Radio } from 'lucide-react';
 import clsx from 'clsx';
 
+import { useTracking } from './context/TrackingContext';
+import { useEffect } from 'react';
+
+interface ActiveService {
+  pubkey: string;
+  serviceId: string;
+}
+
 function Main() {
   const { pubkey, logout, method } = useAuth();
+  const { tracked, findTracked } = useTracking();
   const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'publish' | 'trust'>('discovery');
-  const [activeRelay, setActiveRelay] = useState<string | null>(null);
+  const [activeRelay, setActiveRelay] = useState<string | null>(() => localStorage.getItem('ncc_active_relay'));
+  const [currentService, setCurrentService] = useState<ActiveService | null>(() => {
+      const saved = localStorage.getItem('ncc_active_service');
+      return saved ? JSON.parse(saved) : null;
+  });
 
-  const handleConnect = (url: string) => {
+  const handleConnect = (url: string, serviceInfo?: { pubkey: string, id: string }) => {
     setActiveRelay(url);
+    localStorage.setItem('ncc_active_relay', url);
+    if (serviceInfo) {
+        const info = { pubkey: serviceInfo.pubkey, serviceId: serviceInfo.id };
+        setCurrentService(info);
+        localStorage.setItem('ncc_active_service', JSON.stringify(info));
+    }
     setActiveTab('feed');
   };
+
+  const handleLogout = () => {
+    logout();
+    setActiveRelay(null);
+    setCurrentService(null);
+    localStorage.removeItem('ncc_active_relay');
+    localStorage.removeItem('ncc_active_service');
+  };
+
+  // Monitor for updates to the current active service
+  useEffect(() => {
+      if (!currentService || !activeRelay) return;
+
+      const trackedInfo = findTracked(currentService.pubkey, currentService.serviceId);
+      if (!trackedInfo) return;
+
+      // Logic to determine if we should update activeRelay
+      // Check NCC-05 Decrypted Payload for endpoints
+      let endpoints = trackedInfo.decryptedPayload?.endpoints;
+      
+      if (!endpoints && trackedInfo.latestEvent?.content.startsWith('{')) {
+          try {
+              endpoints = JSON.parse(trackedInfo.latestEvent.content).endpoints;
+          } catch (e) {
+              console.error("Failed to parse NCC-05 content", e);
+          }
+      }
+      
+      if (endpoints && endpoints.length > 0) {
+          // Sort by priority and get best
+          const best = [...endpoints].sort((a, b) => a.priority - b.priority)[0];
+          let newUrl = best.url || best.uri;
+          
+          // Protocol normalization
+          if (!newUrl.includes('://')) {
+              newUrl = newUrl.includes('.onion') ? `ws://${newUrl}` : `wss://${newUrl}`;
+          }
+          if (newUrl.startsWith('http')) newUrl = newUrl.replace('http', 'ws');
+
+          // If the URL has changed, update it!
+          // We need to be careful with Bridged URLs vs Direct URLs.
+          // For now, if it's an onion and we are currently using a bridge, we re-bridge it.
+          if (activeRelay.includes('/bridge?target=')) {
+              const currentTarget = decodeURIComponent(new URL(activeRelay).searchParams.get('target') || '');
+              if (newUrl !== currentTarget) {
+                  const bridgeUrl = `ws://${window.location.host}/bridge?target=${encodeURIComponent(newUrl)}`;
+                  console.log(`🚀 NCC Auto-Update: Relay endpoint changed from ${currentTarget} to ${newUrl} (via Bridge)`);
+                  setActiveRelay(bridgeUrl);
+                  localStorage.setItem('ncc_active_relay', bridgeUrl);
+              }
+          } else if (newUrl !== activeRelay) {
+              console.log(`🚀 NCC Auto-Update: Relay endpoint changed from ${activeRelay} to ${newUrl}`);
+              setActiveRelay(newUrl);
+              localStorage.setItem('ncc_active_relay', newUrl);
+          }
+      }
+  }, [tracked, currentService, activeRelay]);
 
   if (!pubkey) {
     return (
@@ -41,14 +117,14 @@ function Main() {
            {activeRelay && (
               <div className="badge badge-success gap-2 hidden sm:flex">
                  <Radio className="w-3 h-3" />
-                 {activeRelay}
+                 {activeRelay.includes('target=') ? 'Bridged Onion' : activeRelay}
               </div>
            )}
           <div className="flex flex-col items-end text-xs hidden sm:flex">
              <span className="opacity-70">{method === 'readonly' ? 'Read Only' : 'Authenticated'}</span>
              <span className="font-mono">{pubkey.slice(0, 8)}...{pubkey.slice(-4)}</span>
           </div>
-          <button className="btn btn-ghost btn-circle" onClick={logout} title="Logout">
+          <button className="btn btn-ghost btn-circle" onClick={handleLogout} title="Logout">
             <LogOut className="w-5 h-5" />
           </button>
         </div>

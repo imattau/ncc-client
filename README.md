@@ -50,7 +50,7 @@ In this model, services (like Nostr relays, media servers, or chat rooms) are no
 
 ### 1. Prerequisites
 - **Node.js**: v18+
-- **Tor**: A local Tor daemon running (default port `9050`).
+- **Tor (Optional)**: Only required if you want to connect to `.onion` relays. A local Tor daemon must be running (default port `9050`).
   - *Linux*: `sudo systemctl start tor`
   - *Mac*: `brew services start tor`
 

@@ -7,11 +7,11 @@ import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-re
 import { DEFAULT_RELAYS } from '../lib/relays';
 
 interface DiscoveryProps {
-  onConnect: (url: string) => void;
+  onConnect: (url: string, serviceInfo?: { pubkey: string, id: string }) => void;
 }
 
 export function Discovery({ onConnect }: DiscoveryProps) {
-  const { ncc05Resolver, ncc02Resolver, pool } = useNCC();
+  const { ncc02Resolver, pool } = useNCC();
   const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
   const { trackService, isTracked, untrackService } = useTracking();
   
@@ -117,7 +117,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       if (pubkeyInput.startsWith('npub')) { hex = (nip19.decode(pubkeyInput).data as string); }
       if (!hex) {
           addLog(`🌐 Global Search: Querying bootstrap relays...`);
-          const filter: any = { kinds: [30058, 30059], limit: 50 };
+          const filter: any = { kinds: [30058, 30059, 30060, 30061], limit: 50 };
           if (serviceId) filter['#d'] = [serviceId];
           const events = await withTimeout(
               pool.querySync(DEFAULT_RELAYS, filter), 
@@ -129,46 +129,48 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           return;
       }
       
-      addLog(`🔍 NCC-02: Querying Kind 30059 events...`);
+      addLog(`🔍 NCC Discovery: Querying service events...`);
       let allEvents: any[] = [];
+      
+      // Query all NCC related kinds for this author
+      const events = await withTimeout(
+          pool.querySync(DEFAULT_RELAYS, { 
+              kinds: [30058, 30059, 30060, 30061], 
+              authors: [hex] 
+          }),
+          10000,
+          "NCC Query timed out"
+      );
+      allEvents = events;
+      addLog(`✅ Found ${events.length} records for this pubkey.`);
+
       if (serviceId) {
-        await withTimeout(
-            ncc02Resolver.resolve(hex, serviceId, { requireAttestation: false, minLevel: 'self' }),
-            10000,
-            "NCC-02 Resolution timed out"
-        );
-        addLog(`✅ NCC-02: Service '${serviceId}' verified.`);
-      } else {
-        const events = await withTimeout(
-            pool.querySync(ncc02Resolver.relays, { kinds: [30059], authors: [hex] }),
-            10000,
-            "NCC-02 Query timed out"
-        );
-        allEvents = [...allEvents, ...events];
-        addLog(`✅ NCC-02: Found ${events.length} service records.`);
+          // If serviceId provided, we still run the library resolver for verification logic
+          addLog(`🧐 Verifying '${serviceId}'...`);
+          try {
+              await withTimeout(
+                  ncc02Resolver.resolve(hex, serviceId, { requireAttestation: false, minLevel: 'self' }),
+                  5000,
+                  "Resolution logic timed out"
+              );
+          } catch(e) { /* fallback to manual list */ }
       }
       
       setStep('resolving');
-      addLog(`🌍 NCC-05: Querying Kind 30058 events...`);
+      // No need for separate NCC-05 query anymore as we got all kinds above
+      const locators = allEvents.filter(e => e.kind === 30058);
       if (serviceId) {
-        const locationRecord = await withTimeout(
-            ncc05Resolver.resolve(hex, undefined, serviceId, { gossip: false }),
-            10000,
-            "NCC-05 Resolution timed out"
-        );
-        if (locationRecord && locationRecord.endpoints?.length > 0) {
-           setResolvedEndpoint(locationRecord.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0]);
-           addLog(`📍 NCC-05: Found location for '${serviceId}'.`);
-        }
-      } else {
-         const events = await withTimeout(
-             pool.querySync((ncc05Resolver as any).bootstrapRelays, { kinds: [30058], authors: [hex] }),
-             10000,
-             "NCC-05 Query timed out"
-         );
-         allEvents = [...allEvents, ...events];
-         addLog(`✅ NCC-05: Found ${events.length} locator records.`);
+          const matchingLoc = locators.find(e => e.tags.find((t: any) => t[0] === 'd')?.[1] === serviceId || e.tags.find((t: any) => t[0] === 'd')?.[1] === `${serviceId}-locator`);
+          if (matchingLoc && matchingLoc.content.startsWith('{')) {
+              try {
+                  const data = JSON.parse(matchingLoc.content);
+                  if (data.endpoints?.length > 0) {
+                      setResolvedEndpoint(data.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0]);
+                  }
+              } catch(e) {}
+          }
       }
+      
       setRawEvents(allEvents); fetchProfiles(allEvents); setStep('complete');
     } catch (e: any) { 
         setError(e.message || 'Discovery failed'); 
@@ -178,9 +180,25 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   };
 
   const handleConnect = (targetUrl?: string, serviceInfo?: { pubkey: string, id: string }) => {
-    if (serviceInfo && !isTracked(serviceInfo.pubkey, serviceInfo.id)) {
-        trackService(serviceInfo.pubkey, serviceInfo.id);
+    let resolvedServiceInfo = serviceInfo;
+    
+    // If no serviceInfo provided but we have a resolvedEndpoint, try to derive it from inputs
+    if (!resolvedServiceInfo && resolvedEndpoint && pubkeyInput) {
+        try {
+            let hex = pubkeyInput;
+            if (pubkeyInput.startsWith('npub')) {
+                hex = nip19.decode(pubkeyInput).data as string;
+            }
+            resolvedServiceInfo = { pubkey: hex, id: serviceId || 'addr' };
+        } catch (e) { /* ignore */ }
     }
+
+    if (resolvedServiceInfo) {
+        if (!isTracked(resolvedServiceInfo.pubkey, resolvedServiceInfo.id)) {
+            trackService(resolvedServiceInfo.pubkey, resolvedServiceInfo.id);
+        }
+    }
+
     let url = targetUrl || (resolvedEndpoint ? (resolvedEndpoint.url || resolvedEndpoint.uri) : null);
     if (!url) return;
     if (!url.includes('://')) { url = url.includes('.onion') ? `ws://${url}` : `wss://${url}`; }
@@ -191,15 +209,15 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         if (choice) {
             // Use Vite Proxy path /bridge
             const bridgeUrl = `ws://${window.location.host}/bridge?target=${encodeURIComponent(url)}`;
-            onConnect(bridgeUrl);
+            onConnect(bridgeUrl, resolvedServiceInfo);
             return;
         } else {
             const direct = window.confirm("Attempt direct connection?");
-            if (direct) { onConnect(url); return; }
+            if (direct) { onConnect(url, resolvedServiceInfo); return; }
             navigator.clipboard.writeText(url); return;
         }
     }
-    onConnect(url);
+    onConnect(url, resolvedServiceInfo);
   };
 
   const handleAttest = async (serviceRecord: any) => {
