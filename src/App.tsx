@@ -107,13 +107,16 @@ function Main() {
 }
 
 import { TrackingProvider } from './context/TrackingContext';
+import { DiscoveryProvider } from './context/DiscoveryContext';
 
 function App() {
   return (
     <AuthProvider>
       <NCCProvider>
         <TrackingProvider>
-          <Main />
+          <DiscoveryProvider>
+            <Main />
+          </DiscoveryProvider>
         </TrackingProvider>
       </NCCProvider>
     </AuthProvider>

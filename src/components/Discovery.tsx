@@ -1,7 +1,7 @@
-import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
+import { useDiscovery } from '../context/DiscoveryContext';
 import { nip19, nip44 } from 'nostr-tools';
 import { Network, ArrowRight, ShieldCheck, AlertTriangle, Lock, User, Unlock } from 'lucide-react';
 import { DEFAULT_RELAYS } from '../lib/relays';
@@ -15,22 +15,19 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
   const { trackService, isTracked } = useTracking();
   
-  const [pubkeyInput, setPubkeyInput] = useState('');
-  const [serviceId, setServiceId] = useState(''); // Empty for "all"
-  
-  // State for the multi-step process
-  const [step, setStep] = useState<'idle' | 'verifying' | 'resolving' | 'complete'>('idle');
-  const [logs, setLogs] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  
-  // Result
-  const [resolvedEndpoint, setResolvedEndpoint] = useState<any>(null);
-  const [rawEvents, setRawEvents] = useState<any[]>([]);
-  const [profiles, setProfiles] = useState<Record<string, any>>({});
-  const [decryptedPayloads, setDecryptedPayloads] = useState<Record<string, any>>({});
-  const [showExpired, setShowExpired] = useState(false);
-
-  const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
+  // Use Context State
+  const {
+    pubkeyInput, setPubkeyInput,
+    serviceId, setServiceId,
+    step, setStep,
+    logs, addLog, clearLogs,
+    error, setError,
+    resolvedEndpoint, setResolvedEndpoint,
+    rawEvents, setRawEvents,
+    profiles, setProfiles,
+    decryptedPayloads, setDecryptedPayloads,
+    showExpired, setShowExpired
+  } = useDiscovery();
 
   // Helper to check expiration
   const isExpired = (ev: any) => {
@@ -131,7 +128,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
   const handleDiscover = async () => {
     setStep('verifying');
-    setLogs([]);
+    clearLogs();
     setError(null);
     setResolvedEndpoint(null);
     setRawEvents([]);

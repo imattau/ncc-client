@@ -2,9 +2,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { render, screen, fireEvent, waitFor } from '@testing-library/react';
 import { Discovery } from '../components/Discovery';
 import { Feed } from '../components/Feed';
-import { NCCProvider } from '../context/NCCContext';
 import { AuthProvider } from '../context/AuthContext';
 import { TrackingProvider } from '../context/TrackingContext';
+import { DiscoveryProvider } from '../context/DiscoveryContext';
 
 // Hoist mocks to ensure they are available before imports
 const { mockResolve02, mockResolve05, mockQuerySync, mockSubscribeMany, mockConnect } = vi.hoisted(() => {
@@ -93,7 +93,9 @@ describe('Discovery Component', () => {
         render(
             <AuthProvider>
                 <TrackingProvider>
-                    <Discovery onConnect={mockOnConnect} />
+                    <DiscoveryProvider>
+                        <Discovery onConnect={mockOnConnect} />
+                    </DiscoveryProvider>
                 </TrackingProvider>
             </AuthProvider>
         );
@@ -105,7 +107,9 @@ describe('Discovery Component', () => {
         render(
             <AuthProvider>
                 <TrackingProvider>
-                    <Discovery onConnect={mockOnConnect} />
+                    <DiscoveryProvider>
+                        <Discovery onConnect={mockOnConnect} />
+                    </DiscoveryProvider>
                 </TrackingProvider>
             </AuthProvider>
         );
