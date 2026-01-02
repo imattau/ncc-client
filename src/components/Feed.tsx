@@ -233,8 +233,11 @@ export function Feed({ relayUrl }: FeedProps) {
           const profile = profiles[ev.pubkey];
           const name = profile?.display_name || profile?.name || ev.pubkey.slice(0, 8);
           
-          const isNcc02 = ev.kind === 30059;
-          const isNcc05 = ev.kind === 30058;
+          const hasTtlTag = ev.tags.some((t: any) => t[0] === 'ttl');
+          const hasExpTag = ev.tags.some((t: any) => t[0] === 'exp');
+
+          const isNcc05 = ev.kind === 30058 && hasTtlTag;
+          const isNcc02 = ev.kind === 30059 && hasExpTag;
           const isNccAttestation = ev.kind === 30060;
           const isNccRevocation = ev.kind === 30061;
 
@@ -265,9 +268,12 @@ export function Feed({ relayUrl }: FeedProps) {
                           {isNccAttestation && <div className="badge badge-accent badge-xs scale-90 sm:scale-100">NCC-02 ATTEST</div>}
                           {isNccRevocation && <div className="badge badge-error badge-xs scale-90 sm:scale-100">NCC-02 REVOKE</div>}
                           
-                          {/* Generic Fallback for NCC kinds without expected tags */}
+                          {/* Generic Fallback for NCC kinds without expected tags or Kind 1 */}
                           {ev.kind === 1 && (
                               <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">NOTE</div>
+                          )}
+                          {!isNcc05 && !isNcc02 && !isNccAttestation && !isNccRevocation && ev.kind > 1 && (
+                              <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">KIND {ev.kind}</div>
                           )}
 
                           <div className="text-[9px] opacity-40 whitespace-nowrap font-mono ml-auto sm:ml-0">
