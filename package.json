@@ -1,5 +1,5 @@
 {
-  "name": "@ncc/client-poc",
+  "name": "@0xx0lostcause0xx0/ncc-client-poc",
   "description": "Proof of Concept client for Nostr Community Conventions (NCC). Implements decentralized infrastructure management and discovery without DNS.",
   "version": "0.1.0",
   "type": "module",
