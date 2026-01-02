@@ -41,7 +41,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           const profileMap: Record<string, any> = {};
           profileEvents.forEach(ev => {
               try {
-                  profileMap[ev.pubkey] = JSON.parse(ev.content);
+                  const content = JSON.parse(ev.content);
+                  // Store content AND tags for logic
+                  profileMap[ev.pubkey] = { ...content, _tags: ev.tags };
               } catch (e) {
                   // ignore
               }
@@ -63,6 +65,18 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       } catch (e) {
           return pubkey.slice(0, 8);
       }
+  };
+  
+  const isTargetedToMe = (publisherPubkey: string) => {
+      if (!myPubkey) return false;
+      const profile = profiles[publisherPubkey];
+      if (!profile || !profile._tags) return false;
+      
+      // Check for 'privaterecipients' tag in Kind 0
+      // Format assumption: ["privaterecipients", "pubkey1", "pubkey2"...] or multiple tags
+      return profile._tags.some((t: string[]) => 
+          t[0] === 'privaterecipients' && t.includes(myPubkey)
+      );
   };
 
   const handleDiscover = async () => {
@@ -320,10 +334,11 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
                                         {/* 2. The Locators (Children) */}
                                         {thread.locators.map((loc) => {
-                                            const isTargetedToMe = myPubkey && loc.tags.find((t: any) => t[0] === 'p' && t[1] === myPubkey);
+                                            // Check publisher's Kind 0 for 'privaterecipients'
+                                            const targeted = isTargetedToMe(loc.pubkey);
 
                                             return (
-                                              <div key={loc.id} className={`ml-4 border-l-2 ${isTargetedToMe ? 'border-success' : 'border-primary'} pl-2`}>
+                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : 'border-primary'} pl-2`}>
                                                   <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
                                                       <input type="checkbox" /> 
                                                       <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
@@ -331,7 +346,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           <span className="opacity-50 text-[10px]">
                                                               {new Date(loc.created_at * 1000).toLocaleTimeString()}
                                                           </span>
-                                                          {isTargetedToMe && (
+                                                          {targeted && (
                                                               <div className="badge badge-success badge-xs gap-1">
                                                                   <User className="w-2 h-2" />
                                                                   For You
