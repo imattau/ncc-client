@@ -9,7 +9,9 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "test": "vitest",
-    "bridge": "node scripts/tor-bridge.js"
+    "bridge": "node scripts/tor-bridge.js",
+    "check-bridge": "node scripts/check-bridge.js",
+    "check-local": "node scripts/check-local-relay.js"
   },
   "dependencies": {
     "buffer": "^6.0.3",

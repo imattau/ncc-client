@@ -1,34 +1,33 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import { SocksProxyAgent } from 'socks-proxy-agent';
 import http from 'http';
-import url from 'url';
 
 // Configuration
 const BRIDGE_PORT = 3001;
 const TOR_SOCKS_PORT = 9050; // Standard Tor port
 const TOR_HOST = '127.0.0.1';
 
-console.log(`🧅 NCC Tor Bridge starting on port ${BRIDGE_PORT}...`);
-console.log(`   Targeting Tor SOCKS at ${TOR_HOST}:${TOR_SOCKS_PORT}`);
+console.log(`\n🧅 NCC Tor Bridge starting...`);
+console.log(`   Listening at:  ws://0.0.0.0:${BRIDGE_PORT}`);
+console.log(`   Tor SOCKS:     socks5h://${TOR_HOST}:${TOR_SOCKS_PORT}`);
 
 // Create HTTP server to upgrade requests
 const server = http.createServer();
 const wss = new WebSocketServer({ noServer: true });
 
-// SOCKS Agent
-const agent = new SocksProxyAgent(`socks5://${TOR_HOST}:${TOR_SOCKS_PORT}`);
+// SOCKS Agent - Use socks5h to ensure remote DNS resolution for .onion
+const agent = new SocksProxyAgent(`socks5h://${TOR_HOST}:${TOR_SOCKS_PORT}`);
 
 server.on('upgrade', (request, socket, head) => {
-  const parsed = url.parse(request.url || '', true);
-  const target = parsed.query.target; // ?target=wss://xyz.onion
+  const reqUrl = new URL(request.url || '', `http://${request.headers.host}`);
+  const target = reqUrl.searchParams.get('target');
 
-  if (!target || typeof target !== 'string') {
+  if (!target) {
+    console.error(`[Bridge] Upgrade failed: Missing 'target' query parameter.`);
     socket.write('HTTP/1.1 400 Bad Request\r\n\r\n');
     socket.destroy();
     return;
   }
-
-  console.log(`[Bridge] New connection request -> ${target}`);
 
   wss.handleUpgrade(request, socket, head, (ws) => {
     wss.emit('connection', ws, request, target);
@@ -37,55 +36,74 @@ server.on('upgrade', (request, socket, head) => {
 
 wss.on('connection', (clientWs, req, targetUrl) => {
   let isClosed = false;
-  console.log(`[Bridge] Client connected. Opening tunnel to ${targetUrl}...`);
+  let remoteOpen = false;
+  const messageBuffer = [];
+
+  console.log(`[Bridge] [${new Date().toLocaleTimeString()}] Tunneling: Client -> ${targetUrl}`);
 
   // Connect to the Onion Relay via SOCKS Agent
-  const remoteWs = new WebSocket(targetUrl, { agent });
-
-  remoteWs.on('open', () => {
-    console.log(`[Bridge] Tunnel established to ${targetUrl}`);
+  const remoteWs = new WebSocket(targetUrl, { 
+      agent,
+      handshakeTimeout: 45000 // 45s for very slow Tor circuits
   });
 
+  // Handle data from Onion Relay -> Browser
   remoteWs.on('message', (data, isBinary) => {
     if (clientWs.readyState === WebSocket.OPEN) {
       clientWs.send(data, { binary: isBinary });
     }
   });
 
-  remoteWs.on('close', () => {
+  remoteWs.on('open', () => {
+    remoteOpen = true;
+    console.log(`[Bridge] ✅ Tunnel Established to ${targetUrl}`);
+    
+    // Flush buffered messages
+    console.log(`[Bridge] 📤 Flushed ${messageBuffer.length} buffered messages to remote.`);
+    while (messageBuffer.length > 0) {
+        const msg = messageBuffer.shift();
+        remoteWs.send(msg.data, { binary: msg.isBinary });
+    }
+  });
+
+  remoteWs.on('close', (code, reason) => {
     if (!isClosed) {
-      console.log(`[Bridge] Remote closed.`);
+      console.log(`[Bridge] 🔌 Remote Closed (Code: ${code}, Reason: ${reason || 'none'})`);
       clientWs.close();
     }
   });
 
   remoteWs.on('error', (err) => {
-    console.error(`[Bridge] Remote error:`, err.message);
+    console.error(`[Bridge] ❌ Remote Error:`, err.message);
     if (clientWs.readyState === WebSocket.OPEN) {
-       // Optional: Send error frame or just close
        clientWs.close();
     }
   });
 
-  // Client -> Remote
+  // Handle data from Browser -> Onion Relay
   clientWs.on('message', (data, isBinary) => {
-    if (remoteWs.readyState === WebSocket.OPEN) {
+    if (remoteOpen && remoteWs.readyState === WebSocket.OPEN) {
       remoteWs.send(data, { binary: isBinary });
+    } else {
+      // Buffer the message until the remote is ready
+      console.log(`[Bridge] 📥 Buffering client message (${data.length} bytes)...`);
+      messageBuffer.push({ data, isBinary });
     }
   });
 
   clientWs.on('close', () => {
     isClosed = true;
-    console.log(`[Bridge] Client disconnected.`);
+    console.log(`[Bridge] 👤 Client Disconnected.`);
     remoteWs.close();
   });
 
   clientWs.on('error', (err) => {
-    console.error(`[Bridge] Client error:`, err.message);
+    console.error(`[Bridge] ❌ Client Error:`, err.message);
     remoteWs.close();
   });
 });
 
 server.listen(BRIDGE_PORT, '0.0.0.0', () => {
-  console.log(`✅ Bridge ready: ws://<your-ip>:${BRIDGE_PORT}?target=<ONION_URL>`);
+  console.log(`✅ Bridge Ready! Use 'ws://<host>:${BRIDGE_PORT}?target=ws://...onion'\n`);
 });
+

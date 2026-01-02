@@ -45,11 +45,19 @@ export function Feed({ relayUrl }: FeedProps) {
     console.log(`[Feed] Attempting to connect to ${relayUrl}...`);
 
     try {
-        // Explicitly test connection first
-        // This ensures we don't just sit in 'connecting' forever or fake it
-        const r = await Relay.connect(relayUrl);
+        // Explicitly test connection first with a timeout
+        // This ensures we don't just sit in 'connecting' forever
+        console.log(`[Feed] Testing connection to ${relayUrl}...`);
+        
+        const connectionPromise = Relay.connect(relayUrl);
+        const timeoutPromise = new Promise((_, reject) => 
+            setTimeout(() => reject(new Error("Connection timed out (15s limit reached)")), 15000)
+        );
+
+        const r = await Promise.race([connectionPromise, timeoutPromise]) as Relay;
+        
         console.log(`[Feed] Connection verified to ${relayUrl}`);
-        r.close(); // Close the test connection, let SimplePool manage the real one
+        r.close(); 
     } catch (e: any) {
         console.error(`[Feed] Connection failed:`, e);
         setStatus('error');
