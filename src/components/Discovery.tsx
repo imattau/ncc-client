@@ -189,13 +189,43 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     }
   };
 
-  const handleConnect = () => {
-    if (!resolvedEndpoint) return;
-    let url = resolvedEndpoint.url || resolvedEndpoint.uri;
+  const handleConnect = (targetUrl?: string, serviceInfo?: { pubkey: string, id: string }) => {
+    // If we have service info, track it automatically
+    if (serviceInfo) {
+        if (!isTracked(serviceInfo.pubkey, serviceInfo.id)) {
+            trackService(serviceInfo.pubkey, serviceInfo.id);
+        }
+    }
+
+    let url = targetUrl;
+    if (!url && resolvedEndpoint) {
+        url = resolvedEndpoint.url || resolvedEndpoint.uri;
+    }
+    
+    if (!url) return;
+
     if (!url.includes('://')) {
        url = url.includes('.onion') ? `ws://${url}` : `wss://${url}`;
     }
     if (url.startsWith('http')) url = url.replace('http', 'ws');
+
+    if (url.includes('.onion')) {
+        const confirmCopy = window.confirm(
+            `🧅 Tor Onion Relay Detected: ${url}\n\n` +
+            `Standard web browsers cannot connect directly to WebSocket Onion addresses.\n\n` +
+            `Click OK to copy this address to your clipboard for use in a native Tor-enabled client.`
+        );
+        
+        if (confirmCopy) {
+            navigator.clipboard.writeText(url).then(() => {
+                alert('Address copied to clipboard!');
+            }).catch(() => {
+                alert('Failed to copy. Please copy it manually from the display.');
+            });
+        }
+        return; 
+    }
+
     onConnect(url);
   };
 

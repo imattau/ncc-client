@@ -106,11 +106,15 @@ function Main() {
   );
 }
 
+import { TrackingProvider } from './context/TrackingContext';
+
 function App() {
   return (
     <AuthProvider>
       <NCCProvider>
-        <Main />
+        <TrackingProvider>
+          <Main />
+        </TrackingProvider>
       </NCCProvider>
     </AuthProvider>
   )
