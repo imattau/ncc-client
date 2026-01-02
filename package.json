@@ -1,8 +1,32 @@
 {
-  "name": "ncc-client-poc",
-  "private": true,
-  "version": "0.0.1",
+  "name": "@ncc/client-poc",
+  "description": "Proof of Concept client for Nostr Community Conventions (NCC). Implements decentralized infrastructure management and discovery without DNS.",
+  "version": "0.1.0",
   "type": "module",
+  "main": "./dist/index.html",
+  "files": [
+    "dist",
+    "scripts",
+    "README.md"
+  ],
+  "publishConfig": {
+    "access": "public"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mattthomson/ncc-client.git"
+  },
+  "keywords": [
+    "nostr",
+    "ncc",
+    "decentralized",
+    "dns-less",
+    "infrastructure",
+    "tor",
+    "onion"
+  ],
+  "author": "Matt Thomson",
+  "license": "MIT",
   "scripts": {
     "dev": "concurrently \"vite --host\" \"node scripts/tor-bridge.js\"",
     "build": "tsc && vite build",
