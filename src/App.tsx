@@ -2,15 +2,22 @@ import { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { NCCProvider } from './context/NCCContext';
 import { Auth } from './components/Auth';
-import { ServiceResolver } from './components/ServiceResolver';
+import { Discovery } from './components/Discovery';
+import { Feed } from './components/Feed';
 import { ServicePublisher } from './components/ServicePublisher';
 import { TrustExplorer } from './components/TrustExplorer';
-import { Globe, LogOut } from 'lucide-react';
+import { Globe, LogOut, Radio } from 'lucide-react';
 import clsx from 'clsx';
 
 function Main() {
   const { pubkey, logout, method } = useAuth();
-  const [activeTab, setActiveTab] = useState<'resolve' | 'publish' | 'trust'>('resolve');
+  const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'publish' | 'trust'>('discovery');
+  const [activeRelay, setActiveRelay] = useState<string | null>(null);
+
+  const handleConnect = (url: string) => {
+    setActiveRelay(url);
+    setActiveTab('feed');
+  };
 
   if (!pubkey) {
     return (
@@ -31,6 +38,12 @@ function Main() {
           </a>
         </div>
         <div className="flex-none gap-4">
+           {activeRelay && (
+              <div className="badge badge-success gap-2 hidden sm:flex">
+                 <Radio className="w-3 h-3" />
+                 {activeRelay}
+              </div>
+           )}
           <div className="flex flex-col items-end text-xs hidden sm:flex">
              <span className="opacity-70">{method === 'readonly' ? 'Read Only' : 'Authenticated'}</span>
              <span className="font-mono">{pubkey.slice(0, 8)}...{pubkey.slice(-4)}</span>
@@ -45,33 +58,41 @@ function Main() {
       <div className="container mx-auto p-4 max-w-4xl">
         
         {/* Tabs */}
-        <div role="tablist" className="tabs tabs-boxed mb-6 bg-base-100 p-2">
+        <div role="tablist" className="tabs tabs-boxed mb-6 bg-base-100 p-2 overflow-x-auto flex-nowrap">
           <a 
             role="tab" 
-            className={clsx("tab", activeTab === 'resolve' && "tab-active")}
-            onClick={() => setActiveTab('resolve')}
+            className={clsx("tab", activeTab === 'discovery' && "tab-active")}
+            onClick={() => setActiveTab('discovery')}
           >
-            Service Discovery (NCC-05)
+            Discovery (02+05)
+          </a>
+          <a 
+            role="tab" 
+            className={clsx("tab", activeTab === 'feed' && "tab-active")}
+            onClick={() => setActiveTab('feed')}
+          >
+            Feed {activeRelay && '🟢'}
           </a>
           <a 
             role="tab" 
             className={clsx("tab", activeTab === 'publish' && "tab-active")}
             onClick={() => setActiveTab('publish')}
           >
-            Publish Service
+            Publish
           </a>
           <a 
              role="tab" 
              className={clsx("tab", activeTab === 'trust' && "tab-active")}
              onClick={() => setActiveTab('trust')}
           >
-            Trust Explorer (NCC-02)
+            Trust Explorer
           </a>
         </div>
 
         {/* Views */}
         <div className="fade-in">
-          {activeTab === 'resolve' && <ServiceResolver />}
+          {activeTab === 'discovery' && <Discovery onConnect={handleConnect} />}
+          {activeTab === 'feed' && <Feed relayUrl={activeRelay} />}
           {activeTab === 'publish' && (
              method === 'readonly' 
              ? <div className="alert">Read-only users cannot publish. Please login with NIP-07 or Private Key.</div>
