@@ -1,9 +1,8 @@
 import { useState, useEffect, useCallback } from 'react';
-import { RelayManager, RelayHealth, DEFAULT_RELAYS } from '../lib/relays';
+import { RelayManager, RelayHealth } from '../lib/relays';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
-import { useTracking } from '../context/TrackingContext';
-import { Settings as SettingsIcon, Server, Shield, Trash2, Plus, RefreshCw, AlertTriangle, CheckCircle2, Download, Cloud, Activity } from 'lucide-react';
+import { Settings as SettingsIcon, Server, Shield, Trash2, Plus, RefreshCw, AlertTriangle, CheckCircle2, Activity } from 'lucide-react';
 import { nip19, nip44 } from 'nostr-tools';
 import clsx from 'clsx';
 
@@ -19,82 +18,57 @@ export function Settings() {
     const [pendingEndpoints, setPendingEndpoints] = useState<string[] | null>(null);
 
     const [isSyncing, setIsSyncing] = useState(false);
-    const [hasRelayBackup, setHasRelayBackup] = useState<boolean | null>(null);
-    const [hasTrackingBackup, setHasTrackingBackup] = useState<boolean | null>(null);
-    const { syncToNostr: syncTracking, restoreFromNostr: restoreTracking } = useTracking();
 
-    const checkBackupStatus = useCallback(async () => {
-        if (!sessionPubkey) return;
-        try {
-            // Check Relay List (10002)
-            const relayEvents = await pool.querySync(DEFAULT_RELAYS, { kinds: [10002], authors: [sessionPubkey], limit: 1 });
-            setHasRelayBackup(relayEvents.length > 0);
-
-            // Check Tracking (30078)
-            const trackingEvents = await pool.querySync(RelayManager.load(), { kinds: [30078], authors: [sessionPubkey], '#d': ['ncc-client-tracking'], limit: 1 });
-            setHasTrackingBackup(trackingEvents.length > 0);
-        } catch (e) { console.warn("Failed to check backup status", e); }
-    }, [sessionPubkey, pool]);
-
-    useEffect(() => {
-        if (sessionPubkey) checkBackupStatus();
-    }, [sessionPubkey, checkBackupStatus]);
-
-    const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-
-    const handleSyncTracking = async () => {
-        if (!sessionPubkey || method === 'readonly') return;
+    const handleSyncToNostr = useCallback(async (list: string[]) => {
+        if (!sessionPubkey || method === 'readonly' || list.length === 0) return;
         setIsSyncing(true);
         try {
-            await syncTracking();
-            setHasTrackingBackup(true);
-            alert("Tracking list backed up to Nostr (Kind 30078)");
-        } catch (e: any) { alert("Sync failed: " + e.message); }
-        finally { setIsSyncing(false); }
-    };
-
-    const handleRestoreTracking = async () => {
-        if (!sessionPubkey) return;
-        setIsSyncing(true);
-        try {
-            await restoreTracking();
-            alert("Tracking list restored and merged from Nostr.");
-        } catch (e: any) { alert("Restore failed: " + e.message); }
-        finally { setIsSyncing(false); }
-    };
-
-    const handleSyncToNostr = async () => {
-        if (!sessionPubkey || method === 'readonly') return;
-        setIsSyncing(true);
-        try {
+            console.log("[Settings] Auto-syncing relay list to Nostr...");
             await RelayManager.saveToNostr(pool, sessionPubkey, signEvent);
-            setHasRelayBackup(true);
-            alert("Relay list synchronized to Nostr (Kind 10002)");
         } catch (e: any) {
-            alert("Sync failed: " + e.message);
+            console.warn("[Settings] Relay sync failed:", e.message);
         } finally {
             setIsSyncing(false);
         }
-    };
+    }, [sessionPubkey, method, pool, signEvent]);
 
-    const handleFetchFromNostr = async () => {
+    const handleRestoreFromNostr = useCallback(async () => {
         if (!sessionPubkey) return;
         setIsSyncing(true);
         try {
+            console.log("[Settings] Auto-restoring relay list from Nostr...");
             const fetched = await RelayManager.fetchFromNostr(pool, sessionPubkey);
             if (fetched) {
                 setRelays(fetched);
-                alert("Relay list restored from Nostr");
                 checkHealth();
-            } else {
-                alert("No relay list found on Nostr for this pubkey.");
             }
         } catch (e: any) {
-            alert("Fetch failed: " + e.message);
+            console.warn("[Settings] Relay restore failed:", e.message);
         } finally {
             setIsSyncing(false);
         }
-    };
+    }, [sessionPubkey, pool]);
+
+    // 1. Auto-Restore on Login
+    useEffect(() => {
+        if (sessionPubkey) {
+            handleRestoreFromNostr();
+        }
+    }, [sessionPubkey, handleRestoreFromNostr]);
+
+    // 2. Auto-Sync on Change (Debounced)
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            const saved = RelayManager.load();
+            const currentStr = JSON.stringify(relays);
+            if (JSON.stringify(saved) !== currentStr) {
+                handleSyncToNostr(relays);
+            }
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, [relays, handleSyncToNostr]);
+
+    const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
 
     const checkHealth = async () => {
         setIsChecking(true);
@@ -242,6 +216,7 @@ export function Settings() {
                 <div className="flex items-center gap-2">
                     <SettingsIcon className="text-primary w-6 h-6" />
                     <h2 className="text-xl font-bold">Network Settings</h2>
+                    {isSyncing && <div className="badge badge-ghost badge-xs animate-pulse">Syncing...</div>}
                 </div>
                 <button 
                     className={clsx("btn btn-sm btn-ghost", isChecking && "loading")} 
@@ -259,24 +234,6 @@ export function Settings() {
                         <h3 className="card-title text-sm opacity-70 uppercase flex items-center gap-2">
                             <Server className="w-4 h-4" /> Bootstrap Relays
                         </h3>
-                        <div className="flex gap-2">
-                            <button 
-                                className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
-                                onClick={handleFetchFromNostr}
-                                title={hasRelayBackup === false ? "No relay list found on network" : "Fetch relay list from Nostr (Kind 10002)"}
-                                disabled={!sessionPubkey || isSyncing || hasRelayBackup === false}
-                            >
-                                <Download className="w-3 h-3 mr-1" /> Restore
-                            </button>
-                            <button 
-                                className={clsx("btn btn-xs btn-outline btn-secondary", isSyncing && "loading")} 
-                                onClick={handleSyncToNostr}
-                                title="Save relay list to Nostr (Kind 10002)"
-                                disabled={!sessionPubkey || method === 'readonly' || isSyncing}
-                            >
-                                <Cloud className="w-3 h-3 mr-1" /> Backup
-                            </button>
-                        </div>
                     </div>
                     
                     <div className="space-y-3">
@@ -369,26 +326,9 @@ export function Settings() {
                         <h3 className="card-title text-sm opacity-70 uppercase flex items-center gap-2">
                             <Activity className="w-4 h-4" /> Tracked Services
                         </h3>
-                        <div className="flex gap-2">
-                            <button 
-                                className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
-                                onClick={handleRestoreTracking}
-                                title={hasTrackingBackup === false ? "No tracking data found on network" : "Restore tracking list from Nostr"}
-                                disabled={!sessionPubkey || isSyncing || hasTrackingBackup === false}
-                            >
-                                <Download className="w-3 h-3 mr-1" /> Restore
-                            </button>
-                            <button 
-                                className={clsx("btn btn-xs btn-outline btn-secondary", isSyncing && "loading")} 
-                                onClick={handleSyncTracking}
-                                disabled={!sessionPubkey || method === 'readonly' || isSyncing}
-                            >
-                                <Cloud className="w-3 h-3 mr-1" /> Backup
-                            </button>
-                        </div>
                     </div>
                     <p className="text-[10px] opacity-50 mt-2">
-                        Back up your followed infrastructure and services list to the Nostr network (encrypted for your pubkey).
+                        Your followed infrastructure and services are automatically backed up to the Nostr network (encrypted for your pubkey).
                     </p>
                 </div>
             </div>

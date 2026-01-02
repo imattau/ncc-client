@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useNCC } from '../context/NCCContext';
 import { RelayManager } from '../lib/relays';
 import { nip19, getPublicKey } from 'nostr-tools';
-import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2, Lock, Upload, Cloud, Download } from 'lucide-react';
+import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2, Lock, Upload } from 'lucide-react';
 import { encryptPrivateRecipients, NCC02Builder, parsePrivateFlag } from 'ncc-02-js';
 import clsx from 'clsx';
 
@@ -15,7 +15,7 @@ interface ManagedIdentity {
 
 // Simple HTML escaping helper
 const escapeHtml = (str: string) => {
-    return str.replace(/[&<>"']/g, (m) => ({
+    return str.replace(/[&<"']/g, (m) => ({
         '&': '&amp;',
         '<': '&lt;',
         '>': '&gt;',
@@ -63,7 +63,6 @@ export function Inventory() {
     const [sidecarDiscovery, setSidecarDiscovery] = useState<{ loading: boolean, services: any[] }>({ loading: false, services: [] });
 
     const [isSyncing, setIsSyncing] = useState(false);
-    const [hasInventoryBackup, setHasInventoryBackup] = useState<boolean | null>(null);
 
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
     const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -72,6 +71,89 @@ export function Inventory() {
         ...(currentPubkey ? [currentPubkey] : []),
         ...identities.map(i => i.pubkey)
     ], [currentPubkey, identities]);
+
+    const handleSyncToNostr = useCallback(async (list: ManagedIdentity[]) => {
+        if (!currentPubkey || method === 'readonly' || list.length === 0) return;
+        setIsSyncing(true);
+        try {
+            console.log("[Inventory] Auto-syncing inventory to Nostr...");
+            const data = list.map(id => ({ pubkey: id.pubkey, label: id.label }));
+            const ciphertext = await encryptNip44(currentPubkey, JSON.stringify(data));
+
+            const event = {
+                kind: 30078,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [['d', 'ncc-client-inventory']],
+                content: ciphertext,
+                pubkey: currentPubkey
+            };
+
+            const signed = await signEvent(event);
+            const pubs = pool.publish(RelayManager.load(), signed);
+            await Promise.any(pubs);
+        } catch (e: any) {
+            console.warn("[Inventory] Auto-sync failed:", e.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    }, [currentPubkey, method, encryptNip44, signEvent, pool]);
+
+    const handleRestoreFromNostr = useCallback(async () => {
+        if (!currentPubkey) return;
+        setIsSyncing(true);
+        try {
+            console.log("[Inventory] Auto-restoring inventory from Nostr...");
+            const events = await pool.querySync(RelayManager.load(), {
+                kinds: [30078],
+                authors: [currentPubkey],
+                '#d': ['ncc-client-inventory'],
+                limit: 1
+            });
+
+            if (events.length > 0) {
+                const plaintext = await decryptNip44(currentPubkey, events[0].content);
+                const data = JSON.parse(plaintext);
+                
+                if (Array.isArray(data)) {
+                    setIdentities(prev => {
+                        const merged = [...prev];
+                        let changed = false;
+                        data.forEach((id: any) => {
+                            if (!merged.find(m => m.pubkey === id.pubkey)) {
+                                merged.push({ pubkey: id.pubkey, label: id.label });
+                                changed = true;
+                            }
+                        });
+                        return changed ? merged : prev;
+                    });
+                }
+            }
+        } catch (e: any) {
+            console.warn("[Inventory] Auto-restore failed:", e.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    }, [currentPubkey, pool, decryptNip44]);
+
+    // 1. Restore on Login
+    useEffect(() => {
+        if (currentPubkey) {
+            handleRestoreFromNostr();
+        }
+    }, [currentPubkey, handleRestoreFromNostr]);
+
+    // 2. Sync on Change (Debounced)
+    useEffect(() => {
+        const timer = setTimeout(() => {
+            const saved = localStorage.getItem('ncc_managed_identities');
+            const currentStr = JSON.stringify(identities);
+            if (saved !== currentStr) {
+                localStorage.setItem('ncc_managed_identities', currentStr);
+                handleSyncToNostr(identities);
+            }
+        }, 3000);
+        return () => clearTimeout(timer);
+    }, [identities, handleSyncToNostr]);
 
     const scanRecords = useCallback(async () => {
         if (allManagedPubkeys.length === 0) return;
@@ -99,98 +181,6 @@ export function Inventory() {
             setLoading(false);
         }
     }, [allManagedPubkeys, pool]);
-
-    const checkBackupStatus = useCallback(async () => {
-        if (!currentPubkey) return;
-        try {
-            const events = await pool.querySync(RelayManager.load(), {
-                kinds: [30078],
-                authors: [currentPubkey],
-                '#d': ['ncc-client-inventory'],
-                limit: 1
-            });
-            setHasInventoryBackup(events.length > 0);
-        } catch (e) { console.warn("Failed to check inventory backup status", e); }
-    }, [currentPubkey, pool]);
-
-    useEffect(() => {
-        if (currentPubkey) checkBackupStatus();
-    }, [currentPubkey, checkBackupStatus]);
-
-    const handleSyncToNostr = async () => {
-        if (!currentPubkey || method === 'readonly') return;
-        setIsSyncing(true);
-        try {
-            // Note: We only sync pubkeys and labels. We NEVER sync private keys.
-            const data = identities.map(id => ({ pubkey: id.pubkey, label: id.label }));
-            const plaintext = JSON.stringify(data);
-            
-            // Encrypt for self
-            const ciphertext = await encryptNip44(currentPubkey, plaintext);
-
-            const event = {
-                kind: 30078,
-                created_at: Math.floor(Date.now() / 1000),
-                tags: [['d', 'ncc-client-inventory']],
-                content: ciphertext,
-                pubkey: currentPubkey
-            };
-
-            const signed = await signEvent(event);
-            const pubs = pool.publish(RelayManager.load(), signed);
-            await Promise.any(pubs);
-            setHasInventoryBackup(true);
-            alert("Inventory backup successfully saved to Nostr (Kind 30078)");
-        } catch (e: any) {
-            alert("Backup failed: " + e.message);
-        } finally {
-            setIsSyncing(false);
-        }
-    };
-
-    const handleRestoreFromNostr = async () => {
-        if (!currentPubkey) return;
-        setIsSyncing(true);
-        try {
-            const events = await pool.querySync(RelayManager.load(), {
-                kinds: [30078],
-                authors: [currentPubkey],
-                '#d': ['ncc-client-inventory'],
-                limit: 1
-            });
-
-            if (events.length > 0) {
-                const ciphertext = events[0].content;
-                const plaintext = await decryptNip44(currentPubkey, ciphertext);
-                const data = JSON.parse(plaintext);
-                
-                if (Array.isArray(data)) {
-                    // Merge with existing, avoiding duplicates
-                    setIdentities(prev => {
-                        const merged = [...prev];
-                        data.forEach((id: any) => {
-                            if (!merged.find(m => m.pubkey === id.pubkey)) {
-                                merged.push({ pubkey: id.pubkey, label: id.label });
-                            }
-                        });
-                        return merged;
-                    });
-                    alert("Inventory restored and merged from Nostr.");
-                }
-            } else {
-                alert("No inventory backup found on Nostr.");
-            }
-        } catch (e: any) {
-            alert("Restore failed: " + e.message);
-        } finally {
-            setIsSyncing(false);
-        }
-    };
-
-    // Persist identities
-    useEffect(() => {
-        localStorage.setItem('ncc_managed_identities', JSON.stringify(identities));
-    }, [identities]);
 
     useEffect(() => {
         scanRecords();
@@ -263,10 +253,10 @@ export function Inventory() {
         
         setLoading(true);
         try {
-            const builder = new NCC02Builder(iden.privkey || (({
+            const builder = new NCC02Builder(iden.privkey || ({
                 getPublicKey: () => Promise.resolve(iden.pubkey),
                 signEvent: (ev: any) => signEvent(ev)
-            }) as any));
+            } as any));
 
             let encryptedRecipients: string[] | undefined;
             if (serviceForm.isPrivate && serviceForm.recipients) {
@@ -459,24 +449,9 @@ export function Inventory() {
                 <div className="flex items-center gap-2">
                     <Package className="text-primary w-6 h-6" />
                     <h2 className="text-xl font-bold">Infrastructure Inventory</h2>
+                    {isSyncing && <div className="badge badge-ghost badge-xs animate-pulse">Syncing...</div>}
                 </div>
                 <div className="flex gap-2">
-                    <button 
-                        className={clsx("btn btn-sm btn-outline btn-primary", isSyncing && "loading")} 
-                        onClick={handleRestoreFromNostr}
-                        title={hasInventoryBackup === false ? "No backup found on network" : "Restore inventory from Nostr (Kind 30078)"}
-                        disabled={!currentPubkey || isSyncing || hasInventoryBackup === false}
-                    >
-                        <Download className="w-4 h-4" /> Restore
-                    </button>
-                    <button 
-                        className={clsx("btn btn-sm btn-outline btn-secondary", isSyncing && "loading")} 
-                        onClick={handleSyncToNostr}
-                        title="Backup inventory to Nostr (Kind 30078)"
-                        disabled={!currentPubkey || method === 'readonly' || isSyncing}
-                    >
-                        <Cloud className="w-4 h-4" /> Backup
-                    </button>
                     <button className={clsx("btn btn-sm", loading && "loading")} onClick={scanRecords}>
                         <RefreshCw className="w-4 h-4" /> Scan Network
                     </button>
@@ -628,7 +603,7 @@ export function Inventory() {
                         </div>
                         <div className="card-actions justify-end mt-4">
                             <button className="btn btn-sm btn-ghost" onClick={() => setShowCreateService(false)}>Cancel</button>
-                            <button className={clsx("btn btn-sm btn-secondary", loading && "loading")} onClick={handleCreateService} disabled={!serviceForm.ownerPubkey}>Publish Record</button>
+                            <button className="btn btn-sm btn-secondary" onClick={handleCreateService} disabled={!serviceForm.ownerPubkey}>Publish Record</button>
                         </div>
                     </div>
                 </div>

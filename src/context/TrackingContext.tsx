@@ -2,7 +2,6 @@ import { createContext, useContext, useState, useEffect, ReactNode, useCallback 
 import { useAuth } from './AuthContext';
 import { useNCC } from './NCCContext';
 import { RelayManager } from '../lib/relays';
-import { nip44 } from 'nostr-tools';
 
 interface TrackedService {
   pubkey: string;
@@ -27,7 +26,7 @@ const TrackingContext = createContext<TrackingContextType | undefined>(undefined
 
 export function TrackingProvider({ children }: { children: ReactNode }) {
   const { pool } = useNCC();
-  const { pubkey: currentPubkey, privkey, signEvent, encryptNip44, decryptNip44, method } = useAuth(); // Only auto-decrypt if we have privkey (NSEC)
+  const { pubkey: currentPubkey, signEvent, encryptNip44, decryptNip44, method } = useAuth(); 
   const [tracked, setTracked] = useState<TrackedService[]>(() => {
     const saved = localStorage.getItem('ncc_tracked_services');
     return saved ? JSON.parse(saved) : [];
@@ -38,10 +37,9 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     localStorage.setItem('ncc_tracked_services', JSON.stringify(tracked));
   }, [tracked]);
 
-  const syncToNostr = async () => {
+  const syncToNostr = useCallback(async () => {
       if (!currentPubkey || method === 'readonly') return;
       try {
-          // Sync simplified list (pubkey + serviceId)
           const data = tracked.map(t => ({ pubkey: t.pubkey, serviceId: t.serviceId }));
           const ciphertext = await encryptNip44(currentPubkey, JSON.stringify(data));
 
@@ -58,58 +56,18 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           await Promise.any(pubs);
       } catch (e) {
           console.error("Tracking sync failed", e);
-          throw e;
       }
-  };
-
-  const restoreFromNostr = async () => {
-      if (!currentPubkey) return;
-      try {
-          const events = await pool.querySync(RelayManager.load(), {
-              kinds: [30078],
-              authors: [currentPubkey],
-              '#d': ['ncc-client-tracking'],
-              limit: 1
-          });
-
-          if (events.length > 0) {
-              const plaintext = await decryptNip44(currentPubkey, events[0].content);
-              const data = JSON.parse(plaintext);
-              if (Array.isArray(data)) {
-                  setTracked(prev => {
-                      const merged = [...prev];
-                      data.forEach((item: any) => {
-                          if (!merged.find(m => m.pubkey === item.pubkey && m.serviceId === item.serviceId)) {
-                              merged.push({
-                                  pubkey: item.pubkey,
-                                  serviceId: item.serviceId,
-                                  latestEvent: null,
-                                  serviceDef: null,
-                                  decryptedPayload: null,
-                                  lastChecked: Math.floor(Date.now() / 1000)
-                              });
-                          }
-                      });
-                      return merged;
-                  });
-              }
-          }
-      } catch (e) {
-          console.error("Tracking restore failed", e);
-          throw e;
-      }
-  };
+  }, [currentPubkey, method, tracked, encryptNip44, signEvent, pool]);
 
   const handleEvent = useCallback(async (ev: any) => {
     const dTag = ev.tags.find((t: any) => t[0] === 'd')?.[1];
     if (!dTag) return;
 
-    // Normalize ID for matching (strip -locator)
     const baseId = dTag.replace(/-locator$/, '').replace(/-loc$/, '');
 
     setTracked(prev => {
       const idx = prev.findIndex(t => t.pubkey === ev.pubkey && t.serviceId === baseId);
-      if (idx === -1) return prev; // Not tracked
+      if (idx === -1) return prev; 
 
       const current = prev[idx];
       let updated = false;
@@ -124,20 +82,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         if (!current.latestEvent || ev.created_at > current.latestEvent.created_at) {
            next.latestEvent = ev;
            next.lastChecked = Math.floor(Date.now() / 1000);
-           next.decryptedPayload = null; // Reset decryption for new event
+           next.decryptedPayload = null; 
            updated = true;
-           
-           // Attempt Auto-Decrypt if NSEC available
-           if (privkey && !ev.content.trim().startsWith('{')) {
-               try {
-                   const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-                   const key = nip44.getConversationKey(hexToBytes(privkey), ev.pubkey);
-                   const decrypted = nip44.decrypt(ev.content, key);
-                   next.decryptedPayload = JSON.parse(decrypted);
-               } catch (e) {
-                   console.error("Auto-decrypt failed", e);
-               }
-           }
         }
       }
 
@@ -147,7 +93,69 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       newTracked[idx] = next;
       return newTracked;
     });
-  }, [privkey]);
+  }, []);
+
+  const restoreFromNostr = useCallback(async () => {
+      if (!currentPubkey) return;
+      try {
+          console.log("[Tracking] Auto-restoring followed services...");
+          const events = await pool.querySync(RelayManager.load(), {
+              kinds: [30078],
+              authors: [currentPubkey],
+              '#d': ['ncc-client-tracking'],
+              limit: 1
+          });
+
+          if (events.length > 0) {
+              const plaintext = await decryptNip44(currentPubkey, events[0].content);
+              const data = JSON.parse(plaintext);
+              if (Array.isArray(data)) {
+                  setTracked(prev => {
+                      const merged = [...prev];
+                      let changed = false;
+                      data.forEach((item: any) => {
+                          if (!merged.find(m => m.pubkey === item.pubkey && m.serviceId === item.serviceId)) {
+                              merged.push({
+                                  pubkey: item.pubkey,
+                                  serviceId: item.serviceId,
+                                  latestEvent: null,
+                                  serviceDef: null,
+                                  decryptedPayload: null,
+                                  lastChecked: Math.floor(Date.now() / 1000)
+                              });
+                              changed = true;
+                          }
+                      });
+                      return changed ? merged : prev;
+                  });
+              }
+          }
+      } catch (e) {
+          console.error("Tracking restore failed", e);
+      }
+  }, [currentPubkey, pool, decryptNip44]);
+
+  // 1. Auto-Restore on Login
+  useEffect(() => {
+      if (currentPubkey) {
+          queueMicrotask(() => {
+              restoreFromNostr();
+          });
+      }
+  }, [currentPubkey, restoreFromNostr]);
+
+  // 2. Auto-Sync on Change (Debounced)
+  useEffect(() => {
+      const timer = setTimeout(() => {
+          const saved = localStorage.getItem('ncc_tracked_services');
+          const currentStr = JSON.stringify(tracked.map(t => ({ pubkey: t.pubkey, serviceId: t.serviceId })));
+          const savedParsed = saved ? JSON.parse(saved).map((t: any) => ({ pubkey: t.pubkey, serviceId: t.serviceId })) : [];
+          if (JSON.stringify(savedParsed) !== currentStr) {
+              syncToNostr();
+          }
+      }, 3000);
+      return () => clearTimeout(timer);
+  }, [tracked, syncToNostr]);
 
   // Active Monitoring Subscription
   useEffect(() => {
@@ -169,7 +177,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     return () => {
       sub.close();
     };
-  }, [tracked.length, handleEvent, pool]); // Re-sub if list or handler changes
+  }, [tracked.length, handleEvent, pool]); 
 
   const trackService = (pubkey: string, serviceId: string) => {
     setTracked(prev => {
