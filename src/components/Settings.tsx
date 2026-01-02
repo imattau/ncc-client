@@ -7,8 +7,8 @@ import { nip19, nip44 } from 'nostr-tools';
 import clsx from 'clsx';
 
 export function Settings() {
-    const { pool } = useNCC();
-    const { privkey: sessionPrivkey } = useAuth();
+    const { pool, ncc05Resolver } = useNCC();
+    const { pubkey: sessionPubkey, privkey: sessionPrivkey, signEvent } = useAuth();
     const [relays, setRelays] = useState<string[]>(() => RelayManager.load());
     const [health, setHealth] = useState<Record<string, RelayHealth>>({});
     const [newRelay, setNewRelay] = useState('');
@@ -57,107 +57,51 @@ export function Settings() {
         
         // Handle npub resolution
         if (input.startsWith('npub')) {
-            console.log("[Settings] Detected npub input, starting resolution...");
+            console.log("[Settings] Detected npub input, starting identity-centric resolution...");
             setIsResolving(true);
-            setResolveStatus("Fetching records...");
+            setResolveStatus("Fetching authored records...");
             try {
                 const { data: pubkey } = nip19.decode(input);
                 const hex = pubkey as string;
-                console.log("[Settings] Decoded npub hex:", hex);
                 
-                // 1. Fetch all NCC records + Profile for this pubkey
-                const bootstrap = RelayManager.load();
-                console.log("[Settings] Querying bootstrap relays for identity:", hex);
-                const events = await pool.querySync(bootstrap, {
-                    kinds: [0, 30058, 30059],
-                    authors: [hex]
-                });
-
-                console.log("[Settings] Found events:", events.length);
-
-                if (events.length === 0) {
-                    throw new Error("No NCC records found for this npub on the current bootstrap relays.");
-                }
-
-                // Sort everything by freshness (newest first)
-                const sortedEvents = [...events].sort((a, b) => b.created_at - a.created_at);
-                
-                // 2. Find the single freshest record with endpoints (ignoring expired)
-                setResolveStatus("Analyzing latest records...");
-                let discovered: string[] = [];
-                const now = Math.floor(Date.now() / 1000);
-                
-                for (const ev of sortedEvents) {
-                    console.log(`[Settings] Probing record ${ev.id.slice(0,8)} (Kind ${ev.kind})...`);
-                    
-                    // CASE A: NCC-02 Service Record with public endpoint
-                    if (ev.kind === 30059) {
-                        const expTag = ev.tags.find(t => t[0] === 'exp');
-                        if (expTag && parseInt(expTag[1]) < now) {
-                            console.log("[Settings] Record is expired (NCC-02), skipping.");
-                            continue;
-                        }
-
-                        const uTags = ev.tags.filter(t => t[0] === 'u');
-                        if (uTags.length > 0) {
-                            discovered = uTags.map(t => t[1]);
-                            console.log("[Settings] Found freshest endpoints in public NCC-02");
-                            break; // Stop! We found the freshest valid source.
-                        }
+                // Construct a NostrSigner-compatible object for the library
+                const signer = {
+                    getPublicKey: async () => sessionPubkey || '',
+                    signEvent: async (ev: any) => signEvent(ev),
+                    getConversationKey: async (peer: string) => {
+                        if (!sessionPrivkey) throw new Error("Decryption requires NSEC or active remote signer");
+                        return nip44.getConversationKey(hexToBytes(sessionPrivkey), peer);
                     }
+                };
 
-                    // CASE B: NCC-05 Locator (might be encrypted)
-                    if (ev.kind === 30058) {
-                        try {
-                            const isEncrypted = !ev.content.trim().startsWith('{');
-                            let payload: any = null;
+                // Use the library's new resolveLatest method (Identity-Centric)
+                // It handles NIP-33, deduplication, and newest-record logic internally.
+                setResolveStatus("Resolving latest locator...");
+                const payload = await ncc05Resolver.resolveLatest(hex, sessionPrivkey ? sessionPrivkey : (signer as any));
 
-                            if (isEncrypted) {
-                                if (sessionPrivkey) {
-                                    const key = nip44.getConversationKey(hexToBytes(sessionPrivkey), ev.pubkey);
-                                    const decrypted = nip44.decrypt(ev.content, key);
-                                    payload = JSON.parse(decrypted);
-                                } else if (window.nostr?.nip44) {
-                                    setResolveStatus("Extension popup: Decrypting...");
-                                    const decrypted = await window.nostr.nip44.decrypt(ev.pubkey, ev.content);
-                                    payload = JSON.parse(decrypted);
-                                }
-                            } else {
-                                payload = JSON.parse(ev.content);
-                            }
-
-                            if (payload) {
-                                // Check expiry for NCC-05
-                                if (payload.updated_at && payload.ttl) {
-                                    if (payload.updated_at + payload.ttl < now) {
-                                        console.log("[Settings] Record is expired (NCC-05), skipping.");
-                                        continue;
-                                    }
-                                }
-
-                                if (payload.endpoints?.length > 0) {
-                                    discovered = payload.endpoints
-                                        .map((ep: any) => ep.url || ep.uri)
-                                        .filter((u: string) => u);
-                                    
-                                    if (discovered.length > 0) {
-                                        console.log("[Settings] Found freshest endpoints in NCC-05 Locator");
-                                        break; // Stop! We found the freshest valid source.
-                                    }
-                                }
-                            }
-                        } catch(e) {
-                            console.warn("[Settings] Decryption/parsing failed for this record, continuing search...", e);
-                        }
-                    }
-                }
-                
-                if (discovered.length > 0) {
+                if (payload && payload.endpoints?.length > 0) {
                     setResolveStatus(null);
-                    setPendingEndpoints(discovered);
+                    // Filter out any that were already bridged (transformer handles it, but let's be safe)
+                    const endpoints = payload.endpoints.map((ep: any) => ep.url);
+                    setPendingEndpoints(endpoints);
                 } else {
-                    console.error("[Settings] No endpoints found in any authored records.");
-                    alert("No relay endpoints found for this npub. Ensure the identity has published NCC-02 or NCC-05 records.");
+                    // Fallback to NCC-02 public tags if no locator found
+                    setResolveStatus("Checking public service records...");
+                    const bootstrap = RelayManager.load();
+                    const events = await pool.querySync(bootstrap, {
+                        kinds: [30059],
+                        authors: [hex],
+                        limit: 10
+                    });
+                    
+                    const freshest = events.sort((a, b) => b.created_at - a.created_at)[0];
+                    const uTags = freshest?.tags.filter(t => t[0] === 'u').map(t => t[1]);
+
+                    if (uTags && uTags.length > 0) {
+                        setPendingEndpoints(uTags);
+                    } else {
+                        throw new Error("No valid infrastructure endpoints found for this identity.");
+                    }
                 }
             } catch (e: any) {
                 console.error("[Settings] Resolution Error:", e);

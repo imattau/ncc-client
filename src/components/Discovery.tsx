@@ -3,7 +3,7 @@ import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
 import { useDiscovery } from '../context/DiscoveryContext';
-import { nip19 } from 'nostr-tools';
+import { nip19, nip44 } from 'nostr-tools';
 import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
 import { RelayManager } from '../lib/relays';
 import clsx from 'clsx';
@@ -26,8 +26,8 @@ interface DiscoveryProps {
 }
 
 export function Discovery({ onConnect }: DiscoveryProps) {
-  const { ncc02Resolver, pool } = useNCC();
-  const { pubkey: myPubkey, signEvent, decryptNip44 } = useAuth();
+  const { ncc02Resolver, ncc05Resolver, pool } = useNCC();
+  const { pubkey: myPubkey, privkey, signEvent, decryptNip44 } = useAuth();
   const { trackService, isTracked, untrackService } = useTracking();
   const { isFollowing } = useWoT();
   
@@ -187,7 +187,6 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const handleDiscover = async () => {
     setStep('verifying'); clearLogs(); setError(null); setResolvedEndpoint(null); setRawEvents([]); setProfiles({}); setDecryptedPayloads({});
     
-    // Timeout helper
     const withTimeout = (promise: Promise<any>, ms: number, msg: string) => 
         Promise.race([
             promise,
@@ -197,8 +196,10 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     try {
       let hex = pubkeyInput;
       if (pubkeyInput.startsWith('npub')) { hex = (nip19.decode(pubkeyInput).data as string); }
+      
       if (!hex) {
           addLog(`🌐 Global Search: Querying bootstrap relays...`);
+          // Note: Global search still uses querySync for broad discovery
           const filter: any = { kinds: [30053, 30058, 30059, 30060, 30061], limit: 50 };
           if (serviceId) filter['#d'] = [serviceId];
           const events = await withTimeout(
@@ -212,60 +213,48 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       }
       
       addLog(`🔍 NCC Discovery: Querying service events...`);
-      let allEvents: any[] = [];
       
-      // 1. Query authored records
-      const authoredEvents = await withTimeout(
-          pool.querySync(RelayManager.load(), { 
-              kinds: [0, 30053, 30058, 30059, 30060, 30061], 
-              authors: [hex] 
-          }),
-          10000,
-          "Authored records query timed out"
-      );
-
-      // 2. Query third-party attestations about this pubkey
-      addLog(`🧐 Fetching trust signals about this identity...`);
-      const trustEvents = await withTimeout(
-          pool.querySync(RelayManager.load(), {
-              kinds: [30060],
-              '#subj': [hex]
-          } as any),
-          5000,
-          "Trust query timed out"
-      );
-
-      allEvents = [...authoredEvents, ...trustEvents];
-      addLog(`✅ Found ${allEvents.length} total records.`);
-
-      if (serviceId) {
-          // If serviceId provided, we still run the library resolver for verification logic
-          addLog(`🧐 Verifying '${serviceId}'...`);
-          try {
-              await withTimeout(
-                  ncc02Resolver.resolve(hex, serviceId, { requireAttestation: false, minLevel: 'self' }),
-                  5000,
-                  "Resolution logic timed out"
-              );
-          } catch(e) { /* fallback to manual list */ }
-      }
-      
-      setStep('resolving');
-      // No need for separate NCC-05 query anymore as we got all kinds above
-      const locators = allEvents.filter(e => e.kind === 30058);
-      if (serviceId) {
-          const matchingLoc = locators.find(e => e.tags.find((t: any) => t[0] === 'd')?.[1] === serviceId || e.tags.find((t: any) => t[0] === 'd')?.[1] === `${serviceId}-locator`);
-          if (matchingLoc && matchingLoc.content.startsWith('{')) {
-              try {
-                  const data = JSON.parse(matchingLoc.content);
-                  if (data.endpoints?.length > 0) {
-                      setResolvedEndpoint(data.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0]);
-                  }
-              } catch(e) {}
+      // Construct a NostrSigner for library use
+      const signer = {
+          getPublicKey: async () => myPubkey || '',
+          signEvent: async (ev: any) => signEvent(ev),
+          getConversationKey: async (peer: string) => {
+              if (privkey) {
+                  const hexToBytes = (h: string) => Uint8Array.from(h.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+                  return nip44.getConversationKey(hexToBytes(privkey), peer);
+              }
+              throw new Error("Local decryption key not available. Ensure you are logged in with NSEC.");
           }
-      }
+      };
+
+      // 1. Resolve Latest Infrastructure (Identity-Centric)
+      addLog(`📍 NCC-05: Resolving latest locator...`);
+      const locator = await withTimeout(
+          ncc05Resolver.resolveLatest(hex, (signer as any)),
+          10000,
+          "Locator resolution timed out"
+      );
+
+      // 2. Resolve Service Status & Trust
+      addLog(`🛡️ NCC-02: Verifying service trust...`);
+      const status = await withTimeout(
+          ncc02Resolver.resolve(hex, serviceId || 'relay', { requireAttestation: false, minLevel: 'self' }),
+          5000,
+          "Trust verification timed out"
+      );
+
+      // Map back to rawEvents for the existing UI rendering
+      // In a full refactor, we would switch the UI to consume 'status' and 'locator' directly
+      const events = [status.serviceEvent, ...(locator ? [/* dummy event for locator data */] : [])].filter(e => e);
+      setRawEvents(events as any[]);
+      fetchProfiles(events as any[]);
       
-      setRawEvents(allEvents); fetchProfiles(allEvents); setStep('complete');
+      if (locator && locator.endpoints?.length > 0) {
+          setResolvedEndpoint(locator.endpoints[0]);
+          addLog(`📍 Found ${locator.endpoints.length} endpoints.`);
+      }
+
+      setStep('complete');
     } catch (e: any) { 
         setError(e.message || 'Discovery failed'); 
         addLog(`❌ Error: ${e.message}`);
@@ -409,39 +398,31 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
                       const threads: Record<string, { service?: any, locators: any[], attestations: any[], revocations: any[] }> = {};
                       
-                      // 1. First Pass: Find the absolute latest record of each Kind for this Identity
-                      let latestService: any = null;
-                      let latestLocator: any = null;
-
+                      // 1. Group events by their base service ID (stripped d-tag)
                       events.forEach(ev => {
+                          const rawD = ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown';
+                          const baseId = rawD.replace(/-locator$/, '').replace(/-loc$/, '');
+                          
+                          if (!threads[baseId]) threads[baseId] = { locators: [], attestations: [], revocations: [] };
+                          
                           if (ev.kind === 30059) {
-                              if (!latestService || ev.created_at > latestService.created_at) {
-                                  latestService = ev;
+                              // Only keep the newest service record for this baseId
+                              if (!threads[baseId].service || ev.created_at > threads[baseId].service.created_at) {
+                                  threads[baseId].service = ev;
                               }
                           } else if (ev.kind === 30058) {
-                              if (!latestLocator || ev.created_at > latestLocator.created_at) {
-                                  latestLocator = ev;
+                              // For locators, we also only want the freshest one per baseId
+                              if (threads[baseId].locators.length === 0 || ev.created_at > threads[baseId].locators[0].created_at) {
+                                  threads[baseId].locators = [ev];
                               }
+                          } else if (ev.kind === 30060) {
+                              threads[baseId].attestations.push(ev);
+                          } else if (ev.kind === 30061) {
+                              threads[baseId].revocations.push(ev);
                           }
                       });
 
-                      // 2. Second Pass: Build the view using only these latest records
-                      if (latestService || latestLocator) {
-                          // We use 'addr' as a generic baseId for this identity-bound thread
-                          const baseId = 'infrastructure'; 
-                          threads[baseId] = { locators: [], attestations: [], revocations: [] };
-                          
-                          if (latestService) threads[baseId].service = latestService;
-                          if (latestLocator) threads[baseId].locators.push(latestLocator);
-
-                          // Collect all attestations/revocations for this identity
-                          events.forEach(ev => {
-                              if (ev.kind === 30060) threads[baseId].attestations.push(ev);
-                              else if (ev.kind === 30061) threads[baseId].revocations.push(ev);
-                          });
-                      }
-
-                      const activeKeys = Object.keys(threads).filter(k => {
+                      const activeKeys = Object.keys(threads).sort().filter(k => {
                           const t = threads[k];
                           const passesExpiry = showExpired || (t.service && !isExpired(t.service)) || t.locators.some(l => !isExpired(l));
                           if (!passesExpiry) return false;
@@ -489,6 +470,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                           const tracked = isTracked(pubkey, baseId);
                                           
                                           const followedAttestations = t.attestations.filter(a => isFollowing(a.pubkey));
+                                          // Check if current user has attested to this specific service
                                           const isAlreadyAttested = attestedIds.includes(t.service?.id) || t.attestations.some(a => a.pubkey === myPubkey);
 
                                           return (
@@ -496,7 +478,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                   <div className="flex items-center justify-between px-1">
                                                       <div className="flex flex-col min-w-0">
                                                           <div className="flex items-center gap-1">
-                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Infrastructure Record</span>
+                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(baseId) }}></span></span>
                                                               {isRevoked && <div className="badge badge-error badge-xs scale-75 font-bold">REVOKED</div>}
                                                               {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
                                                               {t.service && (() => {

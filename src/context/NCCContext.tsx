@@ -18,12 +18,23 @@ export function NCCProvider({ children }: { children: React.ReactNode }) {
   
   const value = useMemo(() => {
     const bootstrap = RelayManager.load();
-    // NCC-05 init - strictly use bootstrap relays only
+
+    // Global URL Transformer for NCC-05
+    // Automatically wraps onion addresses in the bridge URL
+    const urlTransformer = (ep: any) => {
+        if (ep.url.includes('.onion') && !ep.url.includes('/bridge?target=')) {
+            const originalUrl = ep.url;
+            ep.url = `ws://${window.location.host}/bridge?target=${encodeURIComponent(originalUrl)}`;
+            console.log(`[NCC-SDK] 🧅 Auto-Bridged Onion: ${originalUrl}`);
+        }
+        return ep;
+    };
+
+    // NCC-05 init
     const ncc05Resolver = new NCC05Resolver({ 
       pool, 
       bootstrapRelays: bootstrap,
-      // Note: If the library supports a 'gossip: false' global toggle, we'd set it here.
-      // Since it's passed in resolve() options, we ensure the UI call respects it.
+      urlTransformer
     });
     
     const ncc05Publisher = new NCC05Publisher({ 
@@ -31,9 +42,10 @@ export function NCCProvider({ children }: { children: React.ReactNode }) {
       timeout: 5000 
     });
 
-    // NCC-02 init - strictly use bootstrap relays only
+    // NCC-02 init
     const ncc02Resolver = new NCC02Resolver(bootstrap, {
-       pool
+       pool,
+       // In the future, we can inject follows from WoT here
     });
 
     return {

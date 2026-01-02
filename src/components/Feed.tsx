@@ -1,7 +1,8 @@
 import { useState, useEffect, useRef } from 'react';
 import { SimplePool, Event } from 'nostr-tools';
-import { Radio, User, RefreshCw, AlertCircle, ArrowUp, ArrowDown, SortDesc } from 'lucide-react';
+import { Radio, User, RefreshCw, AlertCircle, ArrowUp, ArrowDown, SortDesc, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
+import { useWoT } from '../context/WoTContext';
 
 interface FeedProps {
   relayUrl: string | null;
@@ -31,10 +32,11 @@ export function Feed({ relayUrl }: FeedProps) {
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
+  const [wotOnly, setWotOnly] = useState(false);
+  const { isFollowing } = useWoT();
   const pool = useRef(new SimplePool());
   const pendingCommitRef = useRef<Event[]>([]);
   const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   const scheduleEventCommit = (event: Event) => {
@@ -221,6 +223,12 @@ export function Feed({ relayUrl }: FeedProps) {
                </div>
             </div>
             <div className="flex items-center gap-2">
+                <div className="form-control mr-2 hidden sm:flex">
+                    <label className="cursor-pointer label justify-start gap-2">
+                        <span className="label-text text-[10px] font-bold opacity-50 uppercase">Network Only</span> 
+                        <input type="checkbox" className="toggle toggle-xs toggle-secondary" checked={wotOnly} onChange={e => setWotOnly(e.target.checked)} />
+                    </label>
+                </div>
                 <button 
                     className="btn btn-sm btn-ghost gap-2" 
                     onClick={toggleSort}
@@ -272,17 +280,12 @@ export function Feed({ relayUrl }: FeedProps) {
       )}
 
       <div className="space-y-4">
-        {events.length === 0 && status === 'connected' && (
-           <div className="text-center p-12 opacity-50 border-2 border-dashed border-base-200 rounded-box">
-               <div className="loading loading-dots loading-md mb-2"></div>
-               <p>Connected. Waiting for events...</p>
-               <p className="text-xs mt-2 italic">Note: Some relays may be empty or only store specific NCC kinds.</p>
-           </div>
-        )}
-        
-        {events.map(ev => {
+        {events
+          .filter(ev => !wotOnly || isFollowing(ev.pubkey))
+          .map(ev => {
           const profile = profiles[ev.pubkey];
           const name = profile?.display_name || profile?.name || ev.pubkey.slice(0, 8);
+          const followed = isFollowing(ev.pubkey);
           
           const hasTtlTag = ev.tags.some((t: any) => t[0] === 'ttl');
           const isPrivateTag = ev.tags.some((t: any) => t[0] === 'private' && t[1] === 'true');
@@ -315,7 +318,14 @@ export function Feed({ relayUrl }: FeedProps) {
                    {/* Content */}
                    <div className="flex-1 min-w-0">
                      <div className="flex flex-col sm:flex-row sm:items-center justify-between mb-1 gap-1">
-                       <div className="font-bold text-sm truncate text-primary pr-2" dangerouslySetInnerHTML={{ __html: escapeHtml(name) }}></div>
+                       <div className="flex items-center gap-2">
+                           <div className="font-bold text-sm truncate text-primary" dangerouslySetInnerHTML={{ __html: escapeHtml(name) }}></div>
+                           {followed && (
+                               <div className="badge badge-secondary badge-xs gap-1" title="You follow this author">
+                                   <ShieldCheck className="w-2 h-2" />
+                               </div>
+                           )}
+                       </div>
                        <div className="flex flex-wrap items-center gap-1">
                           {isNcc05 && <div className="badge badge-primary badge-xs scale-90 sm:scale-100">NCC-05 LOCATOR</div>}
                           {isNcc02 && <div className="badge badge-secondary badge-xs scale-90 sm:scale-100">NCC-02 SERVICE</div>}
