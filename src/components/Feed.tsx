@@ -233,21 +233,8 @@ export function Feed({ relayUrl }: FeedProps) {
           const profile = profiles[ev.pubkey];
           const name = profile?.display_name || profile?.name || ev.pubkey.slice(0, 8);
           
-          // NCC Compliance Checks (Identifying "Correct" records)
-          const hasExp = ev.tags.some(t => t[0] === 'exp');
-          const hasTtl = ev.tags.some(t => t[0] === 'ttl');
-          const isPrivate = ev.tags.some(t => t[0] === 'private' && t[1] === 'true');
-          
-          let hasTtlInContent = false;
-          try {
-              if (ev.kind === 30058 && ev.content.startsWith('{')) {
-                  const p = JSON.parse(ev.content);
-                  if (p.ttl) hasTtlInContent = true;
-              }
-          } catch(e) {}
-
-          const isNcc02 = ev.kind === 30059 && hasExp;
-          const isNcc05 = ev.kind === 30058 && (hasTtl || hasTtlInContent || isPrivate);
+          const isNcc02 = ev.kind === 30059;
+          const isNcc05 = ev.kind === 30058;
           const isNccAttestation = ev.kind === 30060;
           const isNccRevocation = ev.kind === 30061;
 
@@ -279,8 +266,8 @@ export function Feed({ relayUrl }: FeedProps) {
                           {isNccRevocation && <div className="badge badge-error badge-xs scale-90 sm:scale-100">NCC-02 REVOKE</div>}
                           
                           {/* Generic Fallback for NCC kinds without expected tags */}
-                          {!isNcc05 && !isNcc02 && !isNccAttestation && !isNccRevocation && ev.kind >= 30058 && ev.kind <= 30061 && (
-                              <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">KIND {ev.kind}</div>
+                          {ev.kind === 1 && (
+                              <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">NOTE</div>
                           )}
 
                           <div className="text-[9px] opacity-40 whitespace-nowrap font-mono ml-auto sm:ml-0">
@@ -294,15 +281,30 @@ export function Feed({ relayUrl }: FeedProps) {
                         ) : (
                             <div className="bg-base-200/50 p-2 rounded border border-base-300 text-xs font-mono overflow-x-auto">
                                 <div className="font-bold mb-1 opacity-50 italic text-[10px]">
-                                    {isNcc05 ? "Identity-Bound Locator" : 
-                                     isNcc02 ? "Pubkey-Owned Service Record" :
-                                     isNccAttestation ? "Service Attestation" :
-                                     isNccRevocation ? "Service Revocation" : `Event Kind ${ev.kind}`}
+                                    {isNcc05 ? "Service Locator (NCC-05)" : 
+                                     isNcc02 ? "Service Record (NCC-02)" :
+                                     isNccAttestation ? "Service Attestation (NCC-02)" :
+                                     isNccRevocation ? "Service Revocation (NCC-02)" : `Event Kind ${ev.kind}`}
                                 </div>
                                 <div className="flex gap-2 mb-1">
                                     <span className="opacity-50">d-tag:</span>
-                                    <span className="font-bold">{ev.tags.find(t => t[0] === 'd')?.[1] || 'none'}</span>
+                                    <span className="font-bold">{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
                                 </div>
+                                {isNcc05 && ev.content.startsWith('{') && (
+                                    <div className="mt-1 space-y-1">
+                                        {(() => {
+                                            try {
+                                                const data = JSON.parse(ev.content);
+                                                return data.endpoints?.map((ep: any, i: number) => (
+                                                    <div key={i} className="text-[10px] bg-base-300/50 p-1 rounded border border-base-400/30 flex items-center justify-between">
+                                                        <span className="truncate flex-1">{ep.url || ep.uri}</span>
+                                                        <span className="badge badge-outline badge-xs opacity-50 ml-1">{ep.type}</span>
+                                                    </div>
+                                                ));
+                                            } catch(e) { return null; }
+                                        })()}
+                                    </div>
+                                )}
                                 <div className="opacity-70 mt-1 truncate max-w-full">
                                     <span className="opacity-50 mr-1">Content:</span>
                                     {ev.content.slice(0, 80)}{ev.content.length > 80 && '...'}
