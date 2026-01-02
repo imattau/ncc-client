@@ -26,8 +26,46 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const [rawEvents, setRawEvents] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Record<string, any>>({});
   const [decryptedPayloads, setDecryptedPayloads] = useState<Record<string, any>>({});
+  const [showExpired, setShowExpired] = useState(false);
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
+
+  // Helper to check expiration
+  const isExpired = (ev: any) => {
+      const now = Math.floor(Date.now() / 1000);
+      
+      // NCC-02 (Kind 30059): Check 'exp' tag
+      if (ev.kind === 30059) {
+          const expTag = ev.tags.find((t: any) => t[0] === 'exp');
+          if (expTag && parseInt(expTag[1]) < now) return true;
+      }
+      
+      // NCC-05 (Kind 30058): Check 'ttl' in content
+      if (ev.kind === 30058) {
+          try {
+              // If encrypted, we can't check TTL unless decrypted. 
+              // But for public records (JSON), we check payload.
+              if (ev.content.trim().startsWith('{')) {
+                  const payload = JSON.parse(ev.content);
+                  // updated_at + ttl < now
+                  if (payload.updated_at && payload.ttl) {
+                      const expiresAt = payload.updated_at + payload.ttl;
+                      if (expiresAt < now) return true;
+                  }
+              } else {
+                  // For encrypted, check decrypted state
+                  const decrypted = decryptedPayloads[ev.id];
+                  if (decrypted && decrypted.updated_at && decrypted.ttl) {
+                       const expiresAt = decrypted.updated_at + decrypted.ttl;
+                       if (expiresAt < now) return true;
+                  }
+              }
+          } catch (e) {
+              // ignore
+          }
+      }
+      return false;
+  };
 
   const fetchProfiles = async (events: any[]) => {
       const authors = [...new Set(events.map(e => e.pubkey))];
@@ -263,6 +301,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
             />
           </div>
 
+          <div className="form-control">
+             <label className="cursor-pointer label justify-start gap-4">
+               <span className="label-text">Show Expired Records</span> 
+               <input type="checkbox" className="toggle toggle-sm toggle-warning" checked={showExpired} onChange={e => setShowExpired(e.target.checked)} />
+             </label>
+          </div>
+
           <button 
             className="btn btn-primary" 
             onClick={handleDiscover}
@@ -320,6 +365,29 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                           }
                       });
 
+                      // Filter threads based on expiration visibility
+                      const activeThreads = Object.entries(threads).filter(([_, thread]) => {
+                          if (showExpired) return true; // Show everything
+                          
+                          // Hide if service is expired (if present)
+                          if (thread.service && isExpired(thread.service)) {
+                              // But if it has active locators, maybe keep it? 
+                              // Strict approach: if service def is expired, the service is dead.
+                              return false;
+                          }
+                          
+                          // Check locators
+                          const hasActiveLocators = thread.locators.some(l => !isExpired(l));
+                          if (hasActiveLocators) return true;
+                          
+                          // If service is active but no active locators -> Keep it (orphaned service def)
+                          if (thread.service && !isExpired(thread.service)) return true;
+
+                          return false; 
+                      });
+                      
+                      if (activeThreads.length === 0) return null;
+
                       return (
                           <div key={pubkey} className="card bg-base-100 shadow-md border border-base-300">
                               <div className="card-body p-4">
@@ -338,11 +406,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
                                   {/* Services List */}
                                   <div className="space-y-4">
-                                      {Object.entries(threads).map(([dTag, thread], i) => {
+                                      {activeThreads.map(([dTag, thread], i) => {
                                           const isPrivateService = thread.service && !thread.service.tags.find((t: any) => t[0] === 'u');
-                                          
+                                          const serviceExpired = thread.service && isExpired(thread.service);
+
                                           return (
-                                              <div key={i} className="border border-base-200 bg-base-100 rounded-box overflow-hidden">
+                                              <div key={i} className={`border ${serviceExpired ? 'border-error bg-error/5' : 'border-base-200 bg-base-100'} rounded-box overflow-hidden`}>
                                                   {/* Service Header */}
                                                   <div className="p-2 bg-base-200 flex items-center justify-between">
                                                       <div className="flex items-center gap-2">
@@ -350,6 +419,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                               {thread.service ? (isPrivateService ? 'Private Service' : 'Service Defined') : 'Locator Only'}
                                                           </div>
                                                           <span className="font-bold text-sm">{dTag}</span>
+                                                          {serviceExpired && <div className="badge badge-error badge-xs">EXPIRED</div>}
                                                       </div>
                                                   </div>
 
@@ -362,6 +432,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                               <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
                                                                   📄 Policy (NCC-02)
                                                                   {isPrivateService && <Lock className="w-3 h-3 text-warning" />}
+                                                                  {serviceExpired && <AlertTriangle className="w-3 h-3 text-error" />}
                                                               </div>
                                                               <div className="collapse-content"> 
                                                                   <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
@@ -376,9 +447,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           const targeted = isTargetedToMe(loc.pubkey);
                                                           const isEncrypted = !loc.content.trim().startsWith('{');
                                                           const decrypted = decryptedPayloads[loc.id];
+                                                          const locExpired = isExpired(loc);
+                                                          
+                                                          if (!showExpired && locExpired) return null;
 
                                                           return (
-                                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : 'border-primary'} pl-2`}>
+                                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : locExpired ? 'border-error' : 'border-primary'} pl-2`}>
                                                                   <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
                                                                       <input type="checkbox" /> 
                                                                       <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
@@ -390,6 +464,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                                               <div className="badge badge-success badge-xs gap-1">
                                                                                   <User className="w-2 h-2" />
                                                                                   For You
+                                                                              </div>
+                                                                          )}
+                                                                          {locExpired && (
+                                                                               <div className="badge badge-error badge-xs gap-1">
+                                                                                  <AlertTriangle className="w-2 h-2" />
+                                                                                  Expired
                                                                               </div>
                                                                           )}
                                                                           {isEncrypted && !decrypted && (
@@ -426,9 +506,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           );
                                                       })}
 
-                                                      {thread.locators.length === 0 && (
+                                                      {thread.locators.filter(l => showExpired || !isExpired(l)).length === 0 && (
                                                           <div className="text-xs opacity-50 italic ml-4 p-2">
-                                                              No locators found.
+                                                              No active locators found.
                                                           </div>
                                                       )}
                                                   </div>
