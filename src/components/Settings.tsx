@@ -2,13 +2,14 @@ import { useState, useEffect } from 'react';
 import { RelayManager, RelayHealth } from '../lib/relays';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
-import { Settings as SettingsIcon, Server, Shield, Trash2, Plus, RefreshCw, AlertTriangle, CheckCircle2 } from 'lucide-react';
+import { useTracking } from '../context/TrackingContext';
+import { Settings as SettingsIcon, Server, Shield, Trash2, Plus, RefreshCw, AlertTriangle, CheckCircle2, Download, Cloud, Activity } from 'lucide-react';
 import { nip19, nip44 } from 'nostr-tools';
 import clsx from 'clsx';
 
 export function Settings() {
     const { pool, ncc05Resolver } = useNCC();
-    const { pubkey: sessionPubkey, privkey: sessionPrivkey, signEvent } = useAuth();
+    const { pubkey: sessionPubkey, privkey: sessionPrivkey, signEvent, method } = useAuth();
     const [relays, setRelays] = useState<string[]>(() => RelayManager.load());
     const [health, setHealth] = useState<Record<string, RelayHealth>>({});
     const [newRelay, setNewRelay] = useState('');
@@ -17,7 +18,62 @@ export function Settings() {
     const [resolveStatus, setResolveStatus] = useState<string | null>(null);
     const [pendingEndpoints, setPendingEndpoints] = useState<string[] | null>(null);
 
+    const [isSyncing, setIsSyncing] = useState(false);
+    const { syncToNostr: syncTracking, restoreFromNostr: restoreTracking } = useTracking();
+
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+
+    const handleSyncTracking = async () => {
+        if (!sessionPubkey || method === 'readonly') return;
+        setIsSyncing(true);
+        try {
+            await syncTracking();
+            alert("Tracking list backed up to Nostr (Kind 30078)");
+        } catch (e: any) { alert("Sync failed: " + e.message); }
+        finally { setIsSyncing(false); }
+    };
+
+    const handleRestoreTracking = async () => {
+        if (!sessionPubkey) return;
+        setIsSyncing(true);
+        try {
+            await restoreTracking();
+            alert("Tracking list restored and merged from Nostr.");
+        } catch (e: any) { alert("Restore failed: " + e.message); }
+        finally { setIsSyncing(false); }
+    };
+
+    const handleSyncToNostr = async () => {
+        if (!sessionPubkey || method === 'readonly') return;
+        setIsSyncing(true);
+        try {
+            await RelayManager.saveToNostr(pool, sessionPubkey, signEvent);
+            alert("Relay list synchronized to Nostr (Kind 10002)");
+        } catch (e: any) {
+            alert("Sync failed: " + e.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const handleFetchFromNostr = async () => {
+        if (!sessionPubkey) return;
+        setIsSyncing(true);
+        try {
+            const fetched = await RelayManager.fetchFromNostr(pool, sessionPubkey);
+            if (fetched) {
+                setRelays(fetched);
+                alert("Relay list restored from Nostr");
+                checkHealth();
+            } else {
+                alert("No relay list found on Nostr for this pubkey.");
+            }
+        } catch (e: any) {
+            alert("Fetch failed: " + e.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
 
     const checkHealth = async () => {
         setIsChecking(true);
@@ -178,9 +234,29 @@ export function Settings() {
             {/* Bootstrap Relays Management */}
             <div className="card bg-base-100 shadow-sm border border-base-200">
                 <div className="card-body">
-                    <h3 className="card-title text-sm opacity-70 uppercase mb-4 flex items-center gap-2">
-                        <Server className="w-4 h-4" /> Bootstrap Relays
-                    </h3>
+                    <div className="flex items-center justify-between mb-4">
+                        <h3 className="card-title text-sm opacity-70 uppercase flex items-center gap-2">
+                            <Server className="w-4 h-4" /> Bootstrap Relays
+                        </h3>
+                        <div className="flex gap-2">
+                            <button 
+                                className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
+                                onClick={handleFetchFromNostr}
+                                title="Fetch relay list from Nostr (Kind 10002)"
+                                disabled={!sessionPubkey || isSyncing}
+                            >
+                                <Download className="w-3 h-3 mr-1" /> Restore
+                            </button>
+                            <button 
+                                className={clsx("btn btn-xs btn-outline btn-secondary", isSyncing && "loading")} 
+                                onClick={handleSyncToNostr}
+                                title="Save relay list to Nostr (Kind 10002)"
+                                disabled={!sessionPubkey || method === 'readonly' || isSyncing}
+                            >
+                                <Cloud className="w-3 h-3 mr-1" /> Backup
+                            </button>
+                        </div>
+                    </div>
                     
                     <div className="space-y-3">
                         {relays.map(url => {
@@ -262,6 +338,36 @@ export function Settings() {
                     <div className="card-actions justify-start mt-2">
                         <button className="btn btn-link btn-xs opacity-50" onClick={handleRestore}>Restore Default Relays</button>
                     </div>
+                </div>
+            </div>
+
+            {/* Tracked Services Section */}
+            <div className="card bg-base-100 shadow-sm border border-base-200">
+                <div className="card-body">
+                    <div className="flex items-center justify-between">
+                        <h3 className="card-title text-sm opacity-70 uppercase flex items-center gap-2">
+                            <Activity className="w-4 h-4" /> Tracked Services
+                        </h3>
+                        <div className="flex gap-2">
+                            <button 
+                                className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
+                                onClick={handleRestoreTracking}
+                                disabled={!sessionPubkey || isSyncing}
+                            >
+                                <Download className="w-3 h-3 mr-1" /> Restore
+                            </button>
+                            <button 
+                                className={clsx("btn btn-xs btn-outline btn-secondary", isSyncing && "loading")} 
+                                onClick={handleSyncTracking}
+                                disabled={!sessionPubkey || method === 'readonly' || isSyncing}
+                            >
+                                <Cloud className="w-3 h-3 mr-1" /> Backup
+                            </button>
+                        </div>
+                    </div>
+                    <p className="text-[10px] opacity-50 mt-2">
+                        Back up your followed infrastructure and services list to the Nostr network (encrypted for your pubkey).
+                    </p>
                 </div>
             </div>
 

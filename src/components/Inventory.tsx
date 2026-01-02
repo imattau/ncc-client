@@ -1,9 +1,9 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { useAuth } from '../context/AuthContext';
 import { useNCC } from '../context/NCCContext';
 import { RelayManager } from '../lib/relays';
 import { nip19, getPublicKey } from 'nostr-tools';
-import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2, Lock, Upload } from 'lucide-react';
+import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2, Lock, Upload, Cloud, Download } from 'lucide-react';
 import { encryptPrivateRecipients, NCC02Builder, parsePrivateFlag } from 'ncc-02-js';
 import clsx from 'clsx';
 
@@ -25,7 +25,7 @@ const escapeHtml = (str: string) => {
 };
 
 export function Inventory() {
-    const { pubkey: currentPubkey, method, signEvent, encryptNip44 } = useAuth();
+    const { pubkey: currentPubkey, method, signEvent, encryptNip44, decryptNip44 } = useAuth();
     const { pool, ncc05Publisher } = useNCC();
     
     const [identities, setIdentities] = useState<ManagedIdentity[]>(() => {
@@ -62,15 +62,17 @@ export function Inventory() {
     });
     const [sidecarDiscovery, setSidecarDiscovery] = useState<{ loading: boolean, services: any[] }>({ loading: false, services: [] });
 
+    const [isSyncing, setIsSyncing] = useState(false);
+
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
     const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
 
-    const allManagedPubkeys = [
+    const allManagedPubkeys = useMemo(() => [
         ...(currentPubkey ? [currentPubkey] : []),
         ...identities.map(i => i.pubkey)
-    ];
+    ], [currentPubkey, identities]);
 
-    const scanRecords = async () => {
+    const scanRecords = useCallback(async () => {
         if (allManagedPubkeys.length === 0) return;
         setLoading(true);
         try {
@@ -95,6 +97,74 @@ export function Inventory() {
         } finally {
             setLoading(false);
         }
+    }, [allManagedPubkeys, pool]);
+
+    const handleSyncToNostr = async () => {
+        if (!currentPubkey || method === 'readonly') return;
+        setIsSyncing(true);
+        try {
+            // Note: We only sync pubkeys and labels. We NEVER sync private keys.
+            const data = identities.map(id => ({ pubkey: id.pubkey, label: id.label }));
+            const plaintext = JSON.stringify(data);
+            
+            // Encrypt for self
+            const ciphertext = await encryptNip44(currentPubkey, plaintext);
+
+            const event = {
+                kind: 30078,
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [['d', 'ncc-client-inventory']],
+                content: ciphertext,
+                pubkey: currentPubkey
+            };
+
+            const signed = await signEvent(event);
+            await pool.publish(RelayManager.load(), signed);
+            alert("Inventory backup successfully saved to Nostr (Kind 30078)");
+        } catch (e: any) {
+            alert("Backup failed: " + e.message);
+        } finally {
+            setIsSyncing(false);
+        }
+    };
+
+    const handleRestoreFromNostr = async () => {
+        if (!currentPubkey) return;
+        setIsSyncing(true);
+        try {
+            const events = await pool.querySync(RelayManager.load(), {
+                kinds: [30078],
+                authors: [currentPubkey],
+                '#d': ['ncc-client-inventory'],
+                limit: 1
+            });
+
+            if (events.length > 0) {
+                const ciphertext = events[0].content;
+                const plaintext = await decryptNip44(currentPubkey, ciphertext);
+                const data = JSON.parse(plaintext);
+                
+                if (Array.isArray(data)) {
+                    // Merge with existing, avoiding duplicates
+                    setIdentities(prev => {
+                        const merged = [...prev];
+                        data.forEach((id: any) => {
+                            if (!merged.find(m => m.pubkey === id.pubkey)) {
+                                merged.push({ pubkey: id.pubkey, label: id.label });
+                            }
+                        });
+                        return merged;
+                    });
+                    alert("Inventory restored and merged from Nostr.");
+                }
+            } else {
+                alert("No inventory backup found on Nostr.");
+            }
+        } catch (e: any) {
+            alert("Restore failed: " + e.message);
+        } finally {
+            setIsSyncing(false);
+        }
     };
 
     // Persist identities
@@ -104,46 +174,60 @@ export function Inventory() {
 
     useEffect(() => {
         scanRecords();
-    }, [identities.length, currentPubkey]);
+    }, [scanRecords]);
 
     const handleAddIdentity = () => {
+        const input = newIdentity.key.trim();
+        if (!input) return;
+
         try {
-            let hex = newIdentity.key;
+            let hex = '';
             let priv: string | undefined;
             
-            if (newIdentity.key.startsWith('nsec')) {
-                const decoded = nip19.decode(newIdentity.key);
-                hex = bytesToHex(decoded.data as Uint8Array);
-                priv = hex;
-                hex = getPublicKey(decoded.data as Uint8Array);
-            } else if (newIdentity.key.startsWith('npub')) {
-                hex = nip19.decode(newIdentity.key).data as string;
-            } else if (newIdentity.key.length === 64) {
-                // Assume hex (could be pub or priv, try get pub)
+            if (input.startsWith('nsec')) {
+                const decoded = nip19.decode(input);
+                if (decoded.type !== 'nsec') throw new Error("Expected nsec");
+                const bytes = decoded.data as Uint8Array;
+                priv = bytesToHex(bytes);
+                hex = getPublicKey(bytes);
+            } else if (input.startsWith('npub')) {
+                const decoded = nip19.decode(input);
+                if (decoded.type !== 'npub') throw new Error("Expected npub");
+                hex = decoded.data as string;
+            } else if (/^[0-9a-fA-F]{64}$/.test(input)) {
+                // It's a 64-char hex. Could be private or public.
+                // We try to treat it as private first to see if we can derive a pubkey.
                 try {
-                    const bytes = hexToBytes(newIdentity.key);
-                    const derivedPub = getPublicKey(bytes);
-                    priv = hex;
-                    hex = derivedPub;
+                    const bytes = hexToBytes(input);
+                    hex = getPublicKey(bytes);
+                    priv = input; // If getPublicKey succeeded, it was a valid private key
                 } catch(e) {
-                    // It was likely just a hex pubkey
+                    // If it failed, it's likely a public key
+                    hex = input.toLowerCase();
                 }
+            } else {
+                throw new Error("Invalid format. Use npub, nsec, or 64-char hex.");
+            }
+
+            // Final sanity check on hex pubkey
+            if (!/^[0-9a-fA-F]{64}$/.test(hex)) {
+                throw new Error("Resulting pubkey is invalid.");
             }
 
             if (allManagedPubkeys.includes(hex)) {
-                alert("Identity already managed");
+                alert("This identity is already in your inventory.");
                 return;
             }
 
             setIdentities([...identities, { 
                 pubkey: hex, 
                 privkey: priv, 
-                label: newIdentity.label || `Service ${hex.slice(0,4)}` 
+                label: newIdentity.label || `Identity ${hex.slice(0,8)}` 
             }]);
             setNewIdentity({ label: '', key: '' });
             setShowAdd(false);
-        } catch (e) {
-            alert("Invalid Key Format");
+        } catch (e: any) {
+            alert("Validation Error: " + (e.message || "Invalid Key"));
         }
     };
 
@@ -357,6 +441,22 @@ export function Inventory() {
                     <h2 className="text-xl font-bold">Infrastructure Inventory</h2>
                 </div>
                 <div className="flex gap-2">
+                    <button 
+                        className={clsx("btn btn-sm btn-outline btn-primary", isSyncing && "loading")} 
+                        onClick={handleRestoreFromNostr}
+                        title="Restore inventory from Nostr (Kind 30078)"
+                        disabled={!currentPubkey || isSyncing}
+                    >
+                        <Download className="w-4 h-4" /> Restore
+                    </button>
+                    <button 
+                        className={clsx("btn btn-sm btn-outline btn-secondary", isSyncing && "loading")} 
+                        onClick={handleSyncToNostr}
+                        title="Backup inventory to Nostr (Kind 30078)"
+                        disabled={!currentPubkey || method === 'readonly' || isSyncing}
+                    >
+                        <Cloud className="w-4 h-4" /> Backup
+                    </button>
                     <button className={clsx("btn btn-sm", loading && "loading")} onClick={scanRecords}>
                         <RefreshCw className="w-4 h-4" /> Scan Network
                     </button>
@@ -400,7 +500,7 @@ export function Inventory() {
                                 <label className="label text-[10px] font-bold uppercase opacity-50">Identity</label>
                                 <select className="select select-bordered select-sm" value={locatorForm.ownerPubkey} onChange={e => setLocatorForm({...locatorForm, ownerPubkey: e.target.value})}>
                                     <option value="">Select Identity...</option>
-                                    {allManagedPubkeys.map(pk => <option key={pk} value={pk}>{identities.find(i => i.pubkey === pk)?.label || (pk === currentPubkey ? "Primary Account" : pk.slice(0,12))}</option>)}
+                                    {allManagedPubkeys.map((pk: string) => <option key={pk} value={pk}>{identities.find(i => i.pubkey === pk)?.label || (pk === currentPubkey ? "Primary Account" : pk.slice(0,12))}</option>)}
                                 </select>
                             </div>
                             <div className="form-control">
@@ -458,7 +558,7 @@ export function Inventory() {
                                     onChange={e => setServiceForm({...serviceForm, ownerPubkey: e.target.value})}
                                 >
                                     <option value="">Select Managed Identity...</option>
-                                    {allManagedPubkeys.map(pk => (
+                                    {allManagedPubkeys.map((pk: string) => (
                                         <option key={pk} value={pk}>
                                             {identities.find(i => i.pubkey === pk)?.label || (pk === currentPubkey ? "Primary Account" : pk.slice(0,12))}
                                         </option>
@@ -491,7 +591,7 @@ export function Inventory() {
                                         checked={serviceForm.isPrivate} 
                                         onChange={e => setServiceForm({...serviceForm, isPrivate: e.target.checked})} 
                                     />
-                                    <span className="label-text font-bold text-xs">Private Service (Requires 'private' tag)</span>
+                                    <span className="label-text font-bold text-xs">Private Service (Requires &apos;private&apos; tag)</span>
                                 </label>
                             </div>
                             {serviceForm.isPrivate && (

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { SimplePool, Event } from 'nostr-tools';
 import { Radio, User, RefreshCw, AlertCircle, ArrowUp, ArrowDown, SortDesc, ShieldCheck } from 'lucide-react';
 import clsx from 'clsx';
@@ -39,7 +39,11 @@ export function Feed({ relayUrl }: FeedProps) {
   const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [refreshTrigger, setRefreshTrigger] = useState(0);
 
-  const scheduleEventCommit = (event: Event) => {
+  const sortEvents = useCallback((evs: Event[], order: 'asc' | 'desc') => {
+      return [...evs].sort((a, b) => order === 'asc' ? a.created_at - b.created_at : b.created_at - a.created_at);
+  }, []);
+
+  const scheduleEventCommit = useCallback((event: Event) => {
     pendingCommitRef.current.push(event);
     if (commitTimerRef.current) return;
 
@@ -49,7 +53,7 @@ export function Feed({ relayUrl }: FeedProps) {
         commitTimerRef.current = null;
 
         setEvents(prev => {
-            let newEvents = [...prev];
+            const newEvents = [...prev];
             let changed = false;
 
             batch.forEach(ev => {
@@ -84,24 +88,24 @@ export function Feed({ relayUrl }: FeedProps) {
             return sortEvents([...newEvents], sortOrder);
         });
     }, 100);
-  };
+  }, [sortOrder, sortEvents]);
 
-  const sortEvents = (evs: Event[], order: 'asc' | 'desc') => {
-      return [...evs].sort((a, b) => order === 'asc' ? a.created_at - b.created_at : b.created_at - a.created_at);
-  };
-
-  const toggleSort = () => {
-      const next = sortOrder === 'asc' ? 'desc' : 'asc';
-      setSortOrder(next);
-      setEvents(prev => sortEvents(prev, next));
-  };
+  const toggleSort = useCallback(() => {
+      setSortOrder(prev => {
+          const next = prev === 'asc' ? 'desc' : 'asc';
+          setEvents(currentEvs => sortEvents(currentEvs, next));
+          return next;
+      });
+  }, [sortEvents]);
   
   // Clear events when relay changes
   useEffect(() => {
-    setEvents([]);
-    setProfiles({});
-    setStatus('disconnected');
-    setErrorMsg(null);
+    queueMicrotask(() => {
+        setEvents([]);
+        setProfiles({});
+        setStatus('disconnected');
+        setErrorMsg(null);
+    });
     pendingCommitRef.current = [];
     if (commitTimerRef.current) {
         clearTimeout(commitTimerRef.current);
@@ -166,7 +170,7 @@ export function Feed({ relayUrl }: FeedProps) {
       if (watchdog) clearTimeout(watchdog);
       if (sub) sub.close();
     };
-  }, [relayUrl, refreshTrigger]);
+  }, [relayUrl, refreshTrigger, scheduleEventCommit]);
 
   // Fetch Profiles (Kind 0) for new authors
   useEffect(() => {
@@ -197,7 +201,7 @@ export function Feed({ relayUrl }: FeedProps) {
     return () => {
        sub.close();
     };
-  }, [events.length, relayUrl]); // Only re-fetch if event count changes
+  }, [events, profiles, relayUrl]); // Corrected dependencies
 
   if (!relayUrl) {
     return (

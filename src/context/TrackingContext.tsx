@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import { createContext, useContext, useState, useEffect, ReactNode, useCallback } from 'react';
 import { useAuth } from './AuthContext';
 import { useNCC } from './NCCContext';
 import { RelayManager } from '../lib/relays';
@@ -19,46 +19,87 @@ interface TrackingContextType {
   untrackService: (pubkey: string, serviceId: string) => void;
   isTracked: (pubkey: string, serviceId: string) => boolean;
   findTracked: (pubkey: string, serviceId: string) => TrackedService | undefined;
+  syncToNostr: () => Promise<void>;
+  restoreFromNostr: () => Promise<void>;
 }
 
 const TrackingContext = createContext<TrackingContextType | undefined>(undefined);
 
 export function TrackingProvider({ children }: { children: ReactNode }) {
   const { pool } = useNCC();
-  const { privkey } = useAuth(); // Only auto-decrypt if we have privkey (NSEC)
+  const { pubkey: currentPubkey, privkey, signEvent, encryptNip44, decryptNip44, method } = useAuth(); // Only auto-decrypt if we have privkey (NSEC)
   const [tracked, setTracked] = useState<TrackedService[]>(() => {
     const saved = localStorage.getItem('ncc_tracked_services');
     return saved ? JSON.parse(saved) : [];
   });
 
-  // Persist
+  // Persist to local storage
   useEffect(() => {
     localStorage.setItem('ncc_tracked_services', JSON.stringify(tracked));
   }, [tracked]);
 
-  // Active Monitoring Subscription
-  useEffect(() => {
-    if (tracked.length === 0) return;
+  const syncToNostr = async () => {
+      if (!currentPubkey || method === 'readonly') return;
+      try {
+          // Sync simplified list (pubkey + serviceId)
+          const data = tracked.map(t => ({ pubkey: t.pubkey, serviceId: t.serviceId }));
+          const ciphertext = await encryptNip44(currentPubkey, JSON.stringify(data));
 
-    const authors = [...new Set(tracked.map(t => t.pubkey))];
-    
-    // Subscribe to updates
-    const sub = pool.subscribeMany(
-      RelayManager.load(),
-      [{ kinds: [30053, 30058, 30059], authors: authors }] as any,
-      {
-        onevent(ev) {
-          handleEvent(ev);
-        }
+          const event = {
+              kind: 30078,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['d', 'ncc-client-tracking']],
+              content: ciphertext,
+              pubkey: currentPubkey
+          };
+
+          const signed = await signEvent(event);
+          await pool.publish(RelayManager.load(), signed);
+      } catch (e) {
+          console.error("Tracking sync failed", e);
+          throw e;
       }
-    );
+  };
 
-    return () => {
-      sub.close();
-    };
-  }, [tracked.length]); // Re-sub if list changes
+  const restoreFromNostr = async () => {
+      if (!currentPubkey) return;
+      try {
+          const events = await pool.querySync(RelayManager.load(), {
+              kinds: [30078],
+              authors: [currentPubkey],
+              '#d': ['ncc-client-tracking'],
+              limit: 1
+          });
 
-  const handleEvent = async (ev: any) => {
+          if (events.length > 0) {
+              const plaintext = await decryptNip44(currentPubkey, events[0].content);
+              const data = JSON.parse(plaintext);
+              if (Array.isArray(data)) {
+                  setTracked(prev => {
+                      const merged = [...prev];
+                      data.forEach((item: any) => {
+                          if (!merged.find(m => m.pubkey === item.pubkey && m.serviceId === item.serviceId)) {
+                              merged.push({
+                                  pubkey: item.pubkey,
+                                  serviceId: item.serviceId,
+                                  latestEvent: null,
+                                  serviceDef: null,
+                                  decryptedPayload: null,
+                                  lastChecked: Math.floor(Date.now() / 1000)
+                              });
+                          }
+                      });
+                      return merged;
+                  });
+              }
+          }
+      } catch (e) {
+          console.error("Tracking restore failed", e);
+          throw e;
+      }
+  };
+
+  const handleEvent = useCallback(async (ev: any) => {
     const dTag = ev.tags.find((t: any) => t[0] === 'd')?.[1];
     if (!dTag) return;
 
@@ -105,7 +146,29 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
       newTracked[idx] = next;
       return newTracked;
     });
-  };
+  }, [privkey]);
+
+  // Active Monitoring Subscription
+  useEffect(() => {
+    if (tracked.length === 0) return;
+
+    const authors = [...new Set(tracked.map(t => t.pubkey))];
+    
+    // Subscribe to updates
+    const sub = pool.subscribeMany(
+      RelayManager.load(),
+      [{ kinds: [30053, 30058, 30059], authors: authors }] as any,
+      {
+        onevent(ev) {
+          handleEvent(ev);
+        }
+      }
+    );
+
+    return () => {
+      sub.close();
+    };
+  }, [tracked.length, handleEvent, pool]); // Re-sub if list or handler changes
 
   const trackService = (pubkey: string, serviceId: string) => {
     setTracked(prev => {
@@ -134,7 +197,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <TrackingContext.Provider value={{ tracked, trackService, untrackService, isTracked, findTracked }}>
+    <TrackingContext.Provider value={{ tracked, trackService, untrackService, isTracked, findTracked, syncToNostr, restoreFromNostr }}>
       {children}
     </TrackingContext.Provider>
   );

@@ -1,3 +1,5 @@
+import { SimplePool } from 'nostr-tools';
+
 export const DEFAULT_RELAYS = [
   'wss://relay.damus.io',
   'wss://nos.lol',
@@ -17,7 +19,7 @@ export const RelayManager = {
     if (saved === null) return DEFAULT_RELAYS;
     try {
       const parsed = JSON.parse(saved);
-      return Array.isArray(parsed) ? parsed : DEFAULT_RELAYS;
+      return Array.isArray(parsed) ? (parsed.length > 0 ? parsed : DEFAULT_RELAYS) : DEFAULT_RELAYS;
     } catch (e) {
       return DEFAULT_RELAYS;
     }
@@ -25,6 +27,39 @@ export const RelayManager = {
 
   save(relays: string[]) {
     localStorage.setItem('ncc_bootstrap_relays', JSON.stringify(relays));
+  },
+
+  async fetchFromNostr(pool: SimplePool, pubkey: string): Promise<string[] | null> {
+    const relays = await pool.querySync(DEFAULT_RELAYS, {
+        kinds: [10002],
+        authors: [pubkey],
+        limit: 1
+    });
+
+    if (relays.length > 0) {
+        const urls = relays[0].tags
+            .filter(t => t[0] === 'r')
+            .map(t => t[1]);
+        if (urls.length > 0) {
+            this.save(urls);
+            return urls;
+        }
+    }
+    return null;
+  },
+
+  async saveToNostr(pool: SimplePool, pubkey: string, signEvent: (ev: any) => Promise<any>): Promise<void> {
+    const urls = this.load();
+    const event = {
+        kind: 10002,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: urls.map(url => ['r', url]),
+        content: '',
+        pubkey
+    };
+
+    const signed = await signEvent(event);
+    await pool.publish(urls.length > 0 ? urls : DEFAULT_RELAYS, signed);
   },
 
   add(url: string) {

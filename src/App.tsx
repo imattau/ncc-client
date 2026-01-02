@@ -101,16 +101,20 @@ function Main() {
               if (newUrl !== currentTarget) {
                   const bridgeUrl = `ws://${window.location.host}/bridge?target=${encodeURIComponent(newUrl)}`;
                   console.log(`🚀 NCC Auto-Update: Relay endpoint changed from ${currentTarget} to ${newUrl} (via Bridge)`);
-                  setActiveRelay(bridgeUrl);
-                  localStorage.setItem('ncc_active_relay', bridgeUrl);
+                  queueMicrotask(() => {
+                      setActiveRelay(bridgeUrl);
+                      localStorage.setItem('ncc_active_relay', bridgeUrl);
+                  });
               }
           } else if (newUrl !== activeRelay) {
               console.log(`🚀 NCC Auto-Update: Relay endpoint changed from ${activeRelay} to ${newUrl}`);
-              setActiveRelay(newUrl);
-              localStorage.setItem('ncc_active_relay', newUrl);
+              queueMicrotask(() => {
+                  setActiveRelay(newUrl);
+                  localStorage.setItem('ncc_active_relay', newUrl);
+              });
           }
       }
-  }, [tracked, currentService, activeRelay]);
+  }, [tracked, currentService, activeRelay, findTracked]);
 
   if (!pubkey) {
     return (

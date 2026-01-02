@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
@@ -51,6 +51,40 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const [targetedOnly, setTargetedOnly] = useState(false);
   const [authorizedEvents, setAuthorizedEvents] = useState<Record<string, boolean>>({});
 
+  const isTargetedToMe = useCallback(async (event: any) => {
+      if (!myPubkey) return false;
+      
+      if (event.kind === 30058) {
+          // 1. Check if I am a recipient in the decrypted payload (if already decrypted)
+          const dec = decryptedPayloads[event.id];
+          if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
+
+          // 3. Check if I am a recipient in the raw content (if it's a public record with a private list)
+          if (event.content.startsWith('{')) {
+              try {
+                  const data = JSON.parse(event.content);
+                  if (data.privaterecipients?.includes(myPubkey)) return true;
+              } catch(e) {}
+          }
+      }
+
+      if (event.kind === 30059) {
+          const privateRecipients = collectPrivateRecipients(event.tags);
+          if (privateRecipients.length > 0) {
+              const signer = {
+                  nip44Decrypt: (ownerPubkey: string, ciphertext: string) => decryptNip44(ownerPubkey, ciphertext),
+                  getPublicKey: () => Promise.resolve(myPubkey)
+              };
+              try {
+                  return await isPrivateRecipientAuthorized(privateRecipients, event.pubkey, signer as any);
+              } catch(e) { return false; }
+          }
+      }
+
+      // 4. Check if I am mentioned in the 'p' tags of the event (Standard Nostr targeted event)
+      return event.tags.some((t: any) => t[0] === 'p' && t[1] === myPubkey);
+  }, [myPubkey, decryptedPayloads, decryptNip44]);
+
   // Pre-calculate authorization for private events
   useEffect(() => {
       const checkAuth = async () => {
@@ -65,7 +99,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       if (rawEvents.length > 0 && myPubkey) {
           checkAuth();
       }
-  }, [rawEvents, myPubkey, decryptedPayloads]);
+  }, [rawEvents, myPubkey, isTargetedToMe]);
 
   // Background Scanner: Find attestations in the existing record cache
   useEffect(() => {
@@ -82,9 +116,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
               });
           }
       }
-  }, [rawEvents, myPubkey]);
+  }, [rawEvents, myPubkey, setAttestedIds]);
 
-  const probeEndpoint = async (url: string) => {
+  const probeEndpoint = useCallback(async (url: string) => {
       setProbing((prev: any) => ({ ...prev, [url]: 'loading' }));
       const start = Date.now();
       
@@ -115,33 +149,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       } catch (e) {
           setProbing((prev: any) => ({ ...prev, [url]: 'error' }));
       }
-  };
+  }, []);
 
-  const isExpired = (ev: any) => {
-      const now = Math.floor(Date.now() / 1000);
-      if (ev.kind === 30059) {
-          const expTag = ev.tags.find((t: any) => t[0] === 'exp');
-          if (expTag && parseInt(expTag[1]) < now) return true;
-      }
-      if (ev.kind === 30058) {
-          try {
-              if (ev.content.trim().startsWith('{')) {
-                  const payload = JSON.parse(ev.content);
-                  if (payload.updated_at && payload.ttl) {
-                      if (payload.updated_at + payload.ttl < now) return true;
-                  }
-              } else {
-                  const decrypted = decryptedPayloads[ev.id];
-                  if (decrypted && decrypted.updated_at && decrypted.ttl) {
-                       if (decrypted.updated_at + decrypted.ttl < now) return true;
-                  }
-              }
-          } catch (e) { /* ignore */ }
-      }
-      return false;
-  };
-
-  const fetchProfiles = async (events: any[]) => {
+  const fetchProfiles = useCallback(async (events: any[]) => {
       const authors = [...new Set(events.map(e => e.pubkey))];
       if (authors.length === 0) return;
       try {
@@ -155,7 +165,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           });
           setProfiles(prev => ({...prev, ...profileMap}));
       } catch (e) { console.error("Failed to fetch profiles", e); }
-  };
+  }, [pool, setProfiles]);
 
   const getDisplayName = (pubkey: string) => {
       const profile = profiles[pubkey];
@@ -168,50 +178,16 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       } catch (e) { return pubkey.slice(0, 8); }
   };
   
-  const isTargetedToMe = async (event: any) => {
-      if (!myPubkey) return false;
-      
-      if (event.kind === 30058) {
-          // 1. Check if I am a recipient in the decrypted payload (if already decrypted)
-          const dec = decryptedPayloads[event.id];
-          if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
-
-          // 2. Check if I am a recipient in the raw content (if it's a public record with a private list)
-          if (event.content.startsWith('{')) {
-              try {
-                  const data = JSON.parse(event.content);
-                  if (data.privaterecipients?.includes(myPubkey)) return true;
-              } catch(e) {}
-          }
-      }
-
-      if (event.kind === 30059) {
-          const privateRecipients = collectPrivateRecipients(event.tags);
-          if (privateRecipients.length > 0) {
-              const signer = {
-                  nip44Decrypt: (ownerPubkey: string, ciphertext: string) => decryptNip44(ownerPubkey, ciphertext),
-                  getPublicKey: () => Promise.resolve(myPubkey)
-              };
-              try {
-                  return await isPrivateRecipientAuthorized(privateRecipients, event.pubkey, signer as any);
-              } catch(e) { return false; }
-          }
-      }
-
-      // 4. Check if I am mentioned in the 'p' tags of the event (Standard Nostr targeted event)
-      return event.tags.some((t: any) => t[0] === 'p' && t[1] === myPubkey);
-  };
-
-  const handleDecryptClick = async (ev: any) => {
+  const handleDecryptClick = useCallback(async (ev: any) => {
       try {
           const decrypted = await decryptNip44(ev.pubkey, ev.content);
           setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
       } catch(e: any) {
           alert("Decryption failed: " + e.message);
       }
-  };
+  }, [decryptNip44, setDecryptedPayloads]);
 
-  const handleDiscover = async () => {
+  const handleDiscover = useCallback(async () => {
     setStep('verifying'); clearLogs(); setError(null); setResolvedEndpoint(null); setRawEvents([]); setProfiles({}); setDecryptedPayloads({});
     
     const withTimeout = (promise: Promise<any>, ms: number, msg: string) => 
@@ -287,9 +263,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         addLog(`❌ Error: ${e.message}`);
         setStep('idle'); 
     }
-  };
+  }, [pubkeyInput, serviceId, myPubkey, signEvent, privkey, ncc05Resolver, ncc02Resolver, pool, setStep, clearLogs, setError, setResolvedEndpoint, setRawEvents, setProfiles, setDecryptedPayloads, addLog, fetchProfiles]);
 
-  const handleConnect = (targetUrl?: string, serviceInfo?: { pubkey: string, id: string }) => {
+  const handleConnect = useCallback((targetUrl?: string, serviceInfo?: { pubkey: string, id: string }) => {
     let resolvedServiceInfo = serviceInfo;
     
     // If no serviceInfo provided but we have a resolvedEndpoint, try to derive it from inputs
@@ -328,9 +304,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         }
     }
     onConnect(url, resolvedServiceInfo);
-  };
+  }, [resolvedEndpoint, pubkeyInput, serviceId, isTracked, trackService, onConnect]);
 
-  const handleAttest = async (serviceRecord: any) => {
+  const handleAttest = useCallback(async (serviceRecord: any) => {
       if (!myPubkey) return alert("Please login first.");
       
       const dTag = serviceRecord.tags.find((t: any) => t[0] === 'd')?.[1];
@@ -367,7 +343,31 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           console.error(e);
           alert("Attestation failed: " + e.message);
       }
-  };
+  }, [myPubkey, signEvent, addLog, pool, setAttestedIds]);
+
+  const isExpired = useCallback((ev: any) => {
+      const now = Math.floor(Date.now() / 1000);
+      if (ev.kind === 30059) {
+          const expTag = ev.tags.find((t: any) => t[0] === 'exp');
+          if (expTag && parseInt(expTag[1]) < now) return true;
+      }
+      if (ev.kind === 30058) {
+          try {
+              if (ev.content.trim().startsWith('{')) {
+                  const payload = JSON.parse(ev.content);
+                  if (payload.updated_at && payload.ttl) {
+                      if (payload.updated_at + payload.ttl < now) return true;
+                  }
+              } else {
+                  const decrypted = decryptedPayloads[ev.id];
+                  if (decrypted && decrypted.updated_at && decrypted.ttl) {
+                       if (decrypted.updated_at + decrypted.ttl < now) return true;
+                  }
+              }
+          } catch (e) { /* ignore */ }
+      }
+      return false;
+  }, [decryptedPayloads]);
 
   return (
     <div className="card bg-base-100 shadow-lg border border-base-200">
@@ -483,17 +483,17 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                               <div className="card-body p-3">
                                   <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 mb-3 pb-2 border-b border-base-200">
                                       <div className="flex items-center gap-3 min-w-0">
-                                          <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span dangerouslySetInnerHTML={{ __html: escapeHtml(name.slice(0, 2).toUpperCase()) }}></span></div></div>
+                                          <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-8"><span>{name.slice(0, 2).toUpperCase()}</span></div></div>
                                           <div className="min-w-0">
                                               <div className="flex items-center gap-2">
-                                                  <div className="font-bold text-sm truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(name) }}></div>
+                                                  <div className="font-bold text-sm truncate">{name}</div>
                                                   {(isFollowing(pubkey) || events.some(e => e.kind === 30060 && isFollowing(e.pubkey))) && (
                                                       <div className="badge badge-secondary badge-xs gap-1">
                                                           <ShieldCheck className="w-2 h-2" /> Network Trusted
                                                       </div>
                                                   )}
                                               </div>
-                                              <div className="text-[9px] opacity-50 truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(npub) }}></div>
+                                              <div className="text-[9px] opacity-50 truncate">{npub}</div>
                                           </div>
                                       </div>
                                       <div className="text-[9px] opacity-40 font-mono text-right sm:text-left">
@@ -518,7 +518,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                   <div className="flex items-center justify-between px-1">
                                                       <div className="flex flex-col min-w-0">
                                                           <div className="flex items-center gap-1">
-                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(baseId) }}></span></span>
+                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Service: {baseId}</span>
                                                               {isRevoked && <div className="badge badge-error badge-xs scale-75 font-bold">REVOKED</div>}
                                                               {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
                                                               {t.service && (() => {
@@ -574,7 +574,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           {t.service?.tags.filter((tag: any) => tag[0] === 'u').map((tag: any, i: number) => (
                                                               <div key={i} className="flex items-center justify-between gap-2 p-2 bg-base-200/50 rounded-lg">
                                                                   <div className="flex flex-col min-w-0 flex-1">
-                                                                      <span className="text-[9px] font-mono truncate" dangerouslySetInnerHTML={{ __html: escapeHtml(tag[1]) }}></span>
+                                                                      <span className="text-[9px] font-mono truncate">{tag[1]}</span>
                                                                       {probing[tag[1]] && (
                                                                           <span className={clsx("text-[8px] font-bold", probing[tag[1]] === 'error' ? "text-error" : probing[tag[1]] === 'loading' ? "animate-pulse" : "text-success")}>
                                                                               {probing[tag[1]] === 'loading' ? 'Probing...' : probing[tag[1]] === 'error' ? 'Offline' : `${probing[tag[1]]}ms`}
@@ -615,8 +615,8 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                                                           return (
                                                                                               <div key={j} className="flex flex-col gap-1">
                                                                                                   <button className="btn btn-xs btn-primary w-full flex flex-col items-start h-auto py-2 gap-1" onClick={() => isR ? handleConnect(u, { pubkey, id: baseId }) : window.open(u, '_blank')}>
-                                                                                                      <div className="flex items-center gap-1 font-bold"> {ep.family==='onion'&&'🧅'} Connect <span dangerouslySetInnerHTML={{ __html: escapeHtml(ep.type||(isR?'Relay':'Web')) }}></span></div>
-                                                                                                      <div className="text-[8px] opacity-70 truncate w-full" dangerouslySetInnerHTML={{ __html: escapeHtml(u) }}></div>
+                                                                                                      <div className="flex items-center gap-1 font-bold"> {ep.family==='onion'&&'🧅'} Connect <span>{ep.type||(isR?'Relay':'Web')}</span></div>
+                                                                                                      <div className="text-[8px] opacity-70 truncate w-full">{u}</div>
                                                                                                   </button>
                                                                                                   <div className="flex items-center justify-between px-1">
                                                                                                       <button className="text-[8px] link opacity-50" onClick={() => probeEndpoint(u)}>Probe Health</button>
