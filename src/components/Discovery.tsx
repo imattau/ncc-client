@@ -117,7 +117,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       if (pubkeyInput.startsWith('npub')) { hex = (nip19.decode(pubkeyInput).data as string); }
       if (!hex) {
           addLog(`🌐 Global Search: Querying bootstrap relays...`);
-          const filter: any = { kinds: [30058, 30059, 30060, 30061], limit: 50 };
+          const filter: any = { kinds: [30053, 30058, 30059, 30060, 30061], limit: 50 };
           if (serviceId) filter['#d'] = [serviceId];
           const events = await withTimeout(
               pool.querySync(RelayManager.load(), filter), 
@@ -135,7 +135,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       // Query all NCC related kinds for this author
       const events = await withTimeout(
           pool.querySync(RelayManager.load(), { 
-              kinds: [30058, 30059, 30060, 30061], 
+              kinds: [30053, 30058, 30059, 30060, 30061], 
               authors: [hex] 
           }),
           10000,

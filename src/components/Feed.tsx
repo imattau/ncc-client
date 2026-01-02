@@ -100,7 +100,7 @@ export function Feed({ relayUrl }: FeedProps) {
 
     const sub = pool.current.subscribeMany(
       [relayUrl],
-      [{ kinds: [1, 30058, 30059, 30060, 30061], limit: 50 }] as any,
+      [{ kinds: [1, 30053, 30058, 30059, 30060, 30061], limit: 50 }] as any,
       {
         onevent(event) {
           hasReceivedAnything = true;
@@ -223,7 +223,7 @@ export function Feed({ relayUrl }: FeedProps) {
         {status === 'connected' && events.length > 0 && (
             <div className="flex flex-wrap gap-2 pt-2 border-t border-base-200">
                 <div className="text-[10px] uppercase font-bold opacity-30 w-full mb-1">Content Summary</div>
-                {[1, 30058, 30059, 30060, 30061].map(k => {
+                {[1, 30053, 30058, 30059, 30060, 30061].map(k => {
                     const count = events.filter(e => e.kind === k).length;
                     if (count === 0) return null;
                     return (
@@ -263,6 +263,7 @@ export function Feed({ relayUrl }: FeedProps) {
           const isNcc02 = ev.kind === 30059 && hasExpTag;
           const isNccAttestation = ev.kind === 30060;
           const isNccRevocation = ev.kind === 30061;
+          const isNcc01 = ev.kind === 30053;
 
           return (
             <div key={ev.id} className="card bg-base-100 shadow-sm border border-base-200 overflow-hidden">
@@ -290,12 +291,13 @@ export function Feed({ relayUrl }: FeedProps) {
                           {isNcc02 && <div className="badge badge-secondary badge-xs scale-90 sm:scale-100">NCC-02 SERVICE</div>}
                           {isNccAttestation && <div className="badge badge-accent badge-xs scale-90 sm:scale-100">NCC-02 ATTEST</div>}
                           {isNccRevocation && <div className="badge badge-error badge-xs scale-90 sm:scale-100">NCC-02 REVOKE</div>}
+                          {isNcc01 && <div className="badge badge-info badge-xs scale-90 sm:scale-100">NCC-01 DETAIL</div>}
                           
                           {/* Generic Fallback for NCC kinds without expected tags or Kind 1 */}
                           {ev.kind === 1 && (
                               <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">NOTE</div>
                           )}
-                          {!isNcc05 && !isNcc02 && !isNccAttestation && !isNccRevocation && ev.kind > 1 && (
+                          {!isNcc05 && !isNcc02 && !isNccAttestation && !isNccRevocation && !isNcc01 && ev.kind > 1 && (
                               <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">KIND {ev.kind}</div>
                           )}
 
@@ -313,7 +315,8 @@ export function Feed({ relayUrl }: FeedProps) {
                                     {isNcc05 ? "Service Locator (NCC-05)" : 
                                      isNcc02 ? "Service Record (NCC-02)" :
                                      isNccAttestation ? "Service Attestation (NCC-02)" :
-                                     isNccRevocation ? "Service Revocation (NCC-02)" : `Event Kind ${ev.kind}`}
+                                     isNccRevocation ? "Service Revocation (NCC-02)" : 
+                                     isNcc01 ? "Service Detail (NCC-01)" : `Event Kind ${ev.kind}`}
                                 </div>
                                 <div className="flex gap-2 mb-1">
                                     <span className="opacity-50">d-tag:</span>

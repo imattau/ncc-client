@@ -45,7 +45,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     // Subscribe to updates
     const sub = pool.subscribeMany(
       RelayManager.load(),
-      [{ kinds: [30058, 30059], authors: authors }] as any,
+      [{ kinds: [30053, 30058, 30059], authors: authors }] as any,
       {
         onevent(ev) {
           handleEvent(ev);
