@@ -3,7 +3,7 @@ import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
 import { useDiscovery } from '../context/DiscoveryContext';
 import { nip19, nip44 } from 'nostr-tools';
-import { Network, ShieldCheck, AlertTriangle, Lock } from 'lucide-react';
+import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
 import { DEFAULT_RELAYS } from '../lib/relays';
 
 interface DiscoveryProps {
@@ -202,6 +202,54 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     onConnect(url);
   };
 
+  const handleAttest = async (serviceRecord: any) => {
+      if (!myPubkey) return alert("Please login first.");
+      
+      const dTag = serviceRecord.tags.find((t: any) => t[0] === 'd')?.[1];
+      if (!dTag) return;
+
+      const now = Math.floor(Date.now() / 1000);
+      const expiry = now + (30 * 24 * 60 * 60); // 30 days
+      
+      const eventTemplate = {
+          kind: 30060,
+          created_at: now,
+          tags: [
+              ['subj', serviceRecord.pubkey],
+              ['srv', dTag],
+              ['e', serviceRecord.id],
+              ['std', 'nostr-service-trust-v0.1'],
+              ['lvl', 'verified'],
+              ['nbf', now.toString()],
+              ['exp', expiry.toString()]
+          ],
+          content: 'NCC-02 Attestation',
+          pubkey: myPubkey
+      };
+
+      try {
+          let signedEvent;
+          if (myPrivkey) {
+              const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+              const { finalizeEvent } = await import('nostr-tools/pure');
+              signedEvent = finalizeEvent(eventTemplate, hexToBytes(myPrivkey));
+          } else if (window.nostr) {
+              signedEvent = await window.nostr.signEvent(eventTemplate);
+          } else {
+              return alert("No signing method available. Use NSEC or Extension.");
+          }
+
+          if (signedEvent) {
+              addLog(`✍️ Publishing Attestation for ${dTag}...`);
+              await pool.publish(DEFAULT_RELAYS, signedEvent);
+              alert("Attestation Published Successfully!");
+          }
+      } catch (e: any) {
+          console.error(e);
+          alert("Attestation failed: " + e.message);
+      }
+  };
+
   return (
     <div className="card bg-base-100 shadow-lg border border-base-200">
       <div className="card-body p-4 sm:p-8">
@@ -289,10 +337,22 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           <span className="font-black text-[10px] uppercase opacity-70 truncate">Service: {baseId}</span>
                                                           {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
                                                       </div>
-                                                      <label className="flex items-center gap-1 cursor-pointer">
-                                                          <span className="text-[9px] opacity-50">Track</span>
-                                                          <input type="checkbox" className="checkbox checkbox-xs" checked={tracked} onChange={(e) => e.target.checked ? trackService(pubkey, baseId) : untrackService(pubkey, baseId)} />
-                                                      </label>
+                                                      <div className="flex items-center gap-3">
+                                                          {t.service && (
+                                                              <button 
+                                                                className="btn btn-ghost btn-xs text-secondary gap-1 p-0 h-auto min-h-0" 
+                                                                title="Attest to this service"
+                                                                onClick={() => handleAttest(t.service)}
+                                                              >
+                                                                  <BadgeCheck className="w-3 h-3" />
+                                                                  <span className="text-[9px]">Attest</span>
+                                                              </button>
+                                                          )}
+                                                          <label className="flex items-center gap-1 cursor-pointer">
+                                                              <span className="text-[9px] opacity-50">Track</span>
+                                                              <input type="checkbox" className="checkbox checkbox-xs" checked={tracked} onChange={(e) => e.target.checked ? trackService(pubkey, baseId) : untrackService(pubkey, baseId)} />
+                                                          </label>
+                                                      </div>
                                                   </div>
                                                   <div className={`border ${sExpired ? 'border-error bg-error/5' : 'border-base-200'} rounded-box overflow-hidden`}>
                                                       <div className="p-2 bg-base-200/30">

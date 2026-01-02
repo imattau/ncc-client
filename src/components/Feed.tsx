@@ -46,7 +46,7 @@ export function Feed({ relayUrl }: FeedProps) {
 
     const sub = pool.current.subscribeMany(
       [relayUrl],
-      [{ kinds: [1], limit: 40 }] as any,
+      [{ kinds: [1, 30058, 30059, 30060, 30061], limit: 50 }] as any,
       {
         onevent(event) {
           hasReceivedAnything = true;
@@ -207,11 +207,32 @@ export function Feed({ relayUrl }: FeedProps) {
                    <div className="flex-1 min-w-0">
                      <div className="flex items-center justify-between mb-1">
                        <div className="font-bold text-sm truncate text-primary">{name}</div>
-                       <div className="text-[10px] opacity-50 whitespace-nowrap ml-2 font-mono">
-                         {new Date(ev.created_at * 1000).toLocaleTimeString()}
+                       <div className="flex items-center gap-2">
+                          {ev.kind === 30058 && <div className="badge badge-primary badge-xs">NCC-05 LOCATOR</div>}
+                          {ev.kind === 30059 && <div className="badge badge-secondary badge-xs">NCC-02 SERVICE</div>}
+                          {ev.kind === 30060 && <div className="badge badge-accent badge-xs">NCC-02 ATTESTATION</div>}
+                          {ev.kind === 30061 && <div className="badge badge-error badge-xs">NCC-02 REVOCATION</div>}
+                          <div className="text-[10px] opacity-50 whitespace-nowrap font-mono">
+                            {new Date(ev.created_at * 1000).toLocaleTimeString()}
+                          </div>
                        </div>
                      </div>
-                     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{ev.content}</p>
+                     <div className="text-sm leading-relaxed">
+                        {ev.kind === 1 ? (
+                            <p className="whitespace-pre-wrap break-words">{ev.content}</p>
+                        ) : (
+                            <div className="bg-base-200 p-2 rounded text-xs font-mono overflow-x-auto">
+                                <div className="font-bold mb-1 opacity-50 italic">
+                                    {ev.kind === 30058 && "Service Locator (Kind 30058)"}
+                                    {ev.kind === 30059 && "Service Record (Kind 30059)"}
+                                    {ev.kind === 30060 && "Service Attestation (Kind 30060)"}
+                                    {ev.kind === 30061 && "Service Revocation (Kind 30061)"}
+                                </div>
+                                <div>d-tag: {ev.tags.find(t => t[0] === 'd')?.[1] || 'none'}</div>
+                                <div className="opacity-70 mt-1 truncate">Content: {ev.content.slice(0, 100)}{ev.content.length > 100 && '...'}</div>
+                            </div>
+                        )}
+                     </div>
                    </div>
                  </div>
               </div>
