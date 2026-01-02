@@ -46,6 +46,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
   const [probing, setProbing] = useState<Record<string, number | 'error' | 'loading'>>({});
   const [wotOnly, setWotOnly] = useState(false);
+  const [attestedIds, setAttestedIds] = useState<string[]>([]);
 
   const probeEndpoint = async (url: string) => {
       setProbing((prev: any) => ({ ...prev, [url]: 'loading' }));
@@ -196,17 +197,29 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       addLog(`🔍 NCC Discovery: Querying service events...`);
       let allEvents: any[] = [];
       
-      // Query all NCC related kinds for this author
-      const events = await withTimeout(
+      // 1. Query authored records
+      const authoredEvents = await withTimeout(
           pool.querySync(RelayManager.load(), { 
               kinds: [0, 30053, 30058, 30059, 30060, 30061], 
               authors: [hex] 
           }),
           10000,
-          "NCC Query timed out"
+          "Authored records query timed out"
       );
-      allEvents = events;
-      addLog(`✅ Found ${events.length} records for this pubkey.`);
+
+      // 2. Query third-party attestations about this pubkey
+      addLog(`🧐 Fetching trust signals about this identity...`);
+      const trustEvents = await withTimeout(
+          pool.querySync(RelayManager.load(), {
+              kinds: [30060],
+              '#subj': [hex]
+          } as any),
+          5000,
+          "Trust query timed out"
+      );
+
+      allEvents = [...authoredEvents, ...trustEvents];
+      addLog(`✅ Found ${allEvents.length} total records.`);
 
       if (serviceId) {
           // If serviceId provided, we still run the library resolver for verification logic
@@ -314,6 +327,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           if (signedEvent) {
               addLog(`✍️ Publishing Attestation for ${dTag}...`);
               await pool.publish(RelayManager.load(), signedEvent);
+              setAttestedIds(prev => [...prev, serviceRecord.id]);
               alert("Attestation Published Successfully!");
           }
       } catch (e: any) {
@@ -377,17 +391,40 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                       const lastUpdateStr = new Date(lastUpdate * 1000).toLocaleString();
 
                       const threads: Record<string, { service?: any, locators: any[], attestations: any[], revocations: any[] }> = {};
+                      
+                      // 1. First Pass: Find the absolute latest record of each Kind for this Identity
+                      let latestService: any = null;
+                      let latestLocator: any = null;
+
                       events.forEach(ev => {
-                          const baseId = (ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown').replace(/-locator$/, '').replace(/-loc$/, '');
-                          if (!threads[baseId]) threads[baseId] = { locators: [], attestations: [], revocations: [] };
-                          
-                          if (ev.kind === 30059) threads[baseId].service = ev;
-                          else if (ev.kind === 30058) threads[baseId].locators.push(ev);
-                          else if (ev.kind === 30060) threads[baseId].attestations.push(ev);
-                          else if (ev.kind === 30061) threads[baseId].revocations.push(ev);
+                          if (ev.kind === 30059) {
+                              if (!latestService || ev.created_at > latestService.created_at) {
+                                  latestService = ev;
+                              }
+                          } else if (ev.kind === 30058) {
+                              if (!latestLocator || ev.created_at > latestLocator.created_at) {
+                                  latestLocator = ev;
+                              }
+                          }
                       });
 
-                      const activeKeys = Object.keys(threads).sort().filter(k => {
+                      // 2. Second Pass: Build the view using only these latest records
+                      if (latestService || latestLocator) {
+                          // We use 'addr' as a generic baseId for this identity-bound thread
+                          const baseId = 'infrastructure'; 
+                          threads[baseId] = { locators: [], attestations: [], revocations: [] };
+                          
+                          if (latestService) threads[baseId].service = latestService;
+                          if (latestLocator) threads[baseId].locators.push(latestLocator);
+
+                          // Collect all attestations/revocations for this identity
+                          events.forEach(ev => {
+                              if (ev.kind === 30060) threads[baseId].attestations.push(ev);
+                              else if (ev.kind === 30061) threads[baseId].revocations.push(ev);
+                          });
+                      }
+
+                      const activeKeys = Object.keys(threads).filter(k => {
                           const t = threads[k];
                           const passesExpiry = showExpired || (t.service && !isExpired(t.service)) || t.locators.some(l => !isExpired(l));
                           if (!passesExpiry) return false;
@@ -395,7 +432,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                           if (wotOnly) {
                               // Is the author someone I follow?
                               if (isFollowing(pubkey)) return true;
-                              // Has someone I follow attested to this service?
+                              // Has someone I follow attested to this identity's services?
                               if (t.attestations.some(a => isFollowing(a.pubkey))) return true;
                               return false;
                           }
@@ -435,13 +472,14 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                           const tracked = isTracked(pubkey, baseId);
                                           
                                           const followedAttestations = t.attestations.filter(a => isFollowing(a.pubkey));
+                                          const isAlreadyAttested = attestedIds.includes(t.service?.id) || t.attestations.some(a => a.pubkey === myPubkey);
 
                                           return (
                                               <div key={baseId} className="space-y-2">
                                                   <div className="flex items-center justify-between px-1">
                                                       <div className="flex flex-col min-w-0">
                                                           <div className="flex items-center gap-1">
-                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(baseId) }}></span></span>
+                                                              <span className={clsx("font-black text-[10px] uppercase truncate", isRevoked ? "text-error line-through" : "opacity-70")}>Infrastructure Record</span>
                                                               {isRevoked && <div className="badge badge-error badge-xs scale-75 font-bold">REVOKED</div>}
                                                               {sExpired && <div className="badge badge-error badge-xs scale-75">EXPIRED</div>}
                                                               {t.service && (() => {
@@ -461,12 +499,16 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                       <div className="flex items-center gap-3">
                                                           {t.service && (
                                                               <button 
-                                                                className="btn btn-ghost btn-xs text-secondary gap-1 p-0 h-auto min-h-0" 
-                                                                title="Attest to this service"
-                                                                onClick={() => handleAttest(t.service)}
+                                                                className={clsx(
+                                                                    "btn btn-xs gap-1 p-0 h-auto min-h-0",
+                                                                    isAlreadyAttested ? "text-success" : "btn-ghost text-secondary"
+                                                                )}
+                                                                title={isAlreadyAttested ? "You have attested to this" : "Attest to this service"}
+                                                                onClick={() => !isAlreadyAttested && handleAttest(t.service)}
+                                                                disabled={isAlreadyAttested}
                                                               >
                                                                   <BadgeCheck className="w-3 h-3" />
-                                                                  <span className="text-[9px]">Attest</span>
+                                                                  <span className="text-[9px]">{isAlreadyAttested ? "Attested" : "Attest"}</span>
                                                               </button>
                                                           )}
                                                           <label className="flex items-center gap-1 cursor-pointer">
