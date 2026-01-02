@@ -43,26 +43,20 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       // NCC-05 (Kind 30058): Check 'ttl' in content
       if (ev.kind === 30058) {
           try {
-              // If encrypted, we can't check TTL unless decrypted. 
-              // But for public records (JSON), we check payload.
               if (ev.content.trim().startsWith('{')) {
                   const payload = JSON.parse(ev.content);
-                  // updated_at + ttl < now
                   if (payload.updated_at && payload.ttl) {
                       const expiresAt = payload.updated_at + payload.ttl;
                       if (expiresAt < now) return true;
                   }
               } else {
-                  // For encrypted, check decrypted state
                   const decrypted = decryptedPayloads[ev.id];
                   if (decrypted && decrypted.updated_at && decrypted.ttl) {
                        const expiresAt = decrypted.updated_at + decrypted.ttl;
                        if (expiresAt < now) return true;
                   }
               }
-          } catch (e) {
-              // ignore
-          }
+          } catch (e) { /* ignore */ }
       }
       return false;
   };
@@ -70,22 +64,17 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const fetchProfiles = async (events: any[]) => {
       const authors = [...new Set(events.map(e => e.pubkey))];
       if (authors.length === 0) return;
-      
       try {
           const profileEvents = await pool.querySync(DEFAULT_RELAYS, {
               kinds: [0],
               authors: authors
           });
-          
           const profileMap: Record<string, any> = {};
           profileEvents.forEach(ev => {
               try {
                   const content = JSON.parse(ev.content);
-                  // Store content AND tags for logic
                   profileMap[ev.pubkey] = { ...content, _tags: ev.tags };
-              } catch (e) {
-                  // ignore
-              }
+              } catch (e) { /* ignore */ }
           });
           setProfiles(prev => ({...prev, ...profileMap}));
       } catch (e) {
@@ -110,19 +99,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       if (!myPubkey) return false;
       const profile = profiles[publisherPubkey];
       if (!profile || !profile._tags) return false;
-      
-      // Check for 'privaterecipients' tag in Kind 0
-      // Format assumption: ["privaterecipients", "pubkey1", "pubkey2"...] or multiple tags
       return profile._tags.some((t: string[]) => 
           t[0] === 'privaterecipients' && t.includes(myPubkey)
       );
   };
 
-  // NOTE: Simple manual decrypt button handler for PoC
   const handleDecryptClick = async (ev: any) => {
-      // Check for NIP-07 Login
       if (myPrivkey) {
-          // NSEC Login - Local Decrypt
           try {
               const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
               const privKeyBytes = hexToBytes(myPrivkey);
@@ -130,20 +113,17 @@ export function Discovery({ onConnect }: DiscoveryProps) {
               const decrypted = nip44.decrypt(ev.content, key);
               setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
           } catch(e) {
-              console.error(e);
               alert("Decryption failed. Key incorrect or invalid format.");
           }
       } else if (window.nostr && window.nostr.nip44) {
-          // NIP-07 Login - Extension Decrypt
           try {
               const decrypted = await window.nostr.nip44.decrypt(ev.pubkey, ev.content);
               setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
           } catch(e) {
-              console.error(e);
-              alert("Extension decryption failed. Rejected or invalid.");
+              alert("Extension decryption failed.");
           }
       } else {
-          alert("Please login with a private key (nsec) or NIP-07 extension supporting NIP-44 to decrypt.");
+          alert("Please login with a private key (nsec) or NIP-07 extension supporting NIP-44.");
       }
   };
 
@@ -163,112 +143,59 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         hex = data as string;
       }
 
-      // GLOBAL SEARCH (No Pubkey)
       if (!hex) {
           addLog(`🌐 Global Search: Querying bootstrap relays for Kind 30059/30058...`);
-          
-          const filter: any = {
-             kinds: [30058, 30059],
-             limit: 50 // Limit to avoid overwhelming PoC
-          };
-          
-          if (serviceId) {
-             filter['#d'] = [serviceId];
-             addLog(`   Filter by Service ID: '${serviceId}'`);
-          }
-
+          const filter: any = { kinds: [30058, 30059], limit: 50 };
+          if (serviceId) filter['#d'] = [serviceId];
           const events = await pool.querySync(DEFAULT_RELAYS, filter);
           setRawEvents(events);
-          fetchProfiles(events); // Fetch metadata
+          fetchProfiles(events);
           addLog(`✅ Found ${events.length} records globally.`);
           setStep('complete');
           return;
       }
 
-      // 1. Inspect/Resolve NCC-02
       addLog(`🔍 NCC-02: Querying Kind 30059 events...`);
       let allEvents: any[] = [];
-      
-      // If serviceId is provided, we use the library resolver.
-      // If not, we'll manually fetch kind 30059 to see what's available.
       if (serviceId) {
-        await ncc02Resolver.resolve(hex, serviceId, {
-          requireAttestation: false, 
-          minLevel: 'self'
-        });
+        await ncc02Resolver.resolve(hex, serviceId, { requireAttestation: false, minLevel: 'self' });
         addLog(`✅ NCC-02: Service '${serviceId}' verified.`);
       } else {
-        // Fetch all 30059 for this pubkey
-        const events = await pool.querySync(ncc02Resolver.relays, {
-           kinds: [30059],
-           authors: [hex]
-        });
+        const events = await pool.querySync(ncc02Resolver.relays, { kinds: [30059], authors: [hex] });
         allEvents = [...allEvents, ...events];
         addLog(`✅ NCC-02: Found ${events.length} service records.`);
       }
       
-      // 2. Inspect/Resolve NCC-05
       setStep('resolving');
       addLog(`🌍 NCC-05: Querying Kind 30058 events...`);
-      
       if (serviceId) {
         const locationRecord = await ncc05Resolver.resolve(hex, undefined, serviceId, { gossip: false });
         if (locationRecord && locationRecord.endpoints?.length > 0) {
-           const bestEndpoint = locationRecord.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0];
-           setResolvedEndpoint(bestEndpoint);
+           setResolvedEndpoint(locationRecord.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0]);
            addLog(`📍 NCC-05: Found location for '${serviceId}'.`);
         }
       } else {
-         // Fetch all 30058 for this pubkey
-         const events = await pool.querySync((ncc05Resolver as any).bootstrapRelays, {
-            kinds: [30058],
-            authors: [hex]
-         });
+         const events = await pool.querySync((ncc05Resolver as any).bootstrapRelays, { kinds: [30058], authors: [hex] });
          allEvents = [...allEvents, ...events];
          addLog(`✅ NCC-05: Found ${events.length} locator records.`);
       }
       
       setRawEvents(allEvents);
-      fetchProfiles(allEvents); // Fetch metadata
-
-      if (!serviceId) {
-         setStep('complete');
-      } else if (resolvedEndpoint) {
-         setStep('complete');
-      } else {
-         addLog(`⚠️ No specific endpoint resolved for '${serviceId}'.`);
-         setStep('idle');
-      }
-
+      fetchProfiles(allEvents);
+      setStep('complete');
     } catch (e: any) {
-      console.error(e);
       setError(e.message || 'Discovery failed');
-      addLog(`❌ Error: ${e.message}`);
       setStep('idle');
     }
   };
 
-
   const handleConnect = () => {
     if (!resolvedEndpoint) return;
-    
-    // Normalize URL
     let url = resolvedEndpoint.url || resolvedEndpoint.uri;
-    
-    // Basic fix for onions or missing protocols
     if (!url.includes('://')) {
-       if (url.includes('.onion')) {
-          url = `ws://${url}`; // Tor usually needs ws/wss
-       } else {
-          url = `wss://${url}`;
-       }
+       url = url.includes('.onion') ? `ws://${url}` : `wss://${url}`;
     }
-    
-    // If it's http/s, switch to ws/s for Nostr
-    if (url.startsWith('http')) {
-        url = url.replace('http', 'ws');
-    }
-
+    if (url.startsWith('http')) url = url.replace('http', 'ws');
     onConnect(url);
   };
 
@@ -283,63 +210,35 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         <div className="flex flex-col gap-4">
           <div className="form-control">
             <label className="label">Target Pubkey</label>
-            <input 
-              className="input input-bordered" 
-              placeholder="npub1..." 
-              value={pubkeyInput}
-              onChange={e => setPubkeyInput(e.target.value)}
-            />
+            <input className="input input-bordered" placeholder="npub1..." value={pubkeyInput} onChange={e => setPubkeyInput(e.target.value)} />
           </div>
-          
-           <div className="form-control">
-            <label className="label text-xs">Service ID (Optional - leave empty to list all)</label>
-            <input 
-              className="input input-bordered" 
-              placeholder="e.g. relay, media" 
-              value={serviceId} 
-              onChange={e => setServiceId(e.target.value)}
-            />
+          <div className="form-control">
+            <label className="label text-xs">Service ID (Optional)</label>
+            <input className="input input-bordered" placeholder="e.g. relay" value={serviceId} onChange={e => setServiceId(e.target.value)} />
           </div>
-
           <div className="form-control">
              <label className="cursor-pointer label justify-start gap-4">
-               <span className="label-text">Show Expired Records</span> 
+               <span className="label-text">Show Expired</span> 
                <input type="checkbox" className="toggle toggle-sm toggle-warning" checked={showExpired} onChange={e => setShowExpired(e.target.checked)} />
              </label>
           </div>
-
-          <button 
-            className="btn btn-primary" 
-            onClick={handleDiscover}
-            disabled={step === 'verifying' || step === 'resolving'}
-          >
+          <button className="btn btn-primary" onClick={handleDiscover} disabled={step === 'verifying' || step === 'resolving'}>
             {step !== 'idle' && step !== 'complete' && <span className="loading loading-spinner"></span>}
             Run Discovery
           </button>
         </div>
 
-        {error && (
-           <div className="alert alert-error mt-4">
-             <AlertTriangle className="w-5 h-5" />
-             <span>{error}</span>
-           </div>
-        )}
+        {error && <div className="alert alert-error mt-4"><AlertTriangle className="w-5 h-5" /><span>{error}</span></div>}
 
-        {/* Logs / Progress */}
         <div className="mt-4 bg-base-300 p-4 rounded-box font-mono text-xs max-h-40 overflow-y-auto">
-           {logs.length === 0 && <span className="opacity-50">Waiting to start...</span>}
-           {logs.map((log, i) => (
-             <div key={i} className="mb-1">{log}</div>
-           ))}
+           {logs.length === 0 && <span className="opacity-50">Waiting...</span>}
+           {logs.map((log, i) => <div key={i} className="mb-1">{log}</div>)}
         </div>
 
-        {/* Threaded Events View - Grouped by Publisher */}
         {rawEvents.length > 0 && (
            <div className="mt-4 space-y-6">
               <h4 className="text-sm font-bold mb-2">Found Services ({rawEvents.length} events)</h4>
-              
               {(() => {
-                  // 1. Group by Publisher
                   const byPublisher: Record<string, any[]> = {};
                   rawEvents.forEach(ev => {
                       if (!byPublisher[ev.pubkey]) byPublisher[ev.pubkey] = [];
@@ -349,168 +248,166 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                   return Object.entries(byPublisher).map(([pubkey, events]) => {
                       const displayName = getDisplayName(pubkey);
                       const npub = nip19.npubEncode(pubkey);
-
-                      // 2. Group by Service (d-tag) within Publisher
                       const threads: Record<string, { service?: any, locators: any[] }> = {};
-                      const getKey = (ev: any) => ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown';
+                      const getBaseId = (ev: any) => (ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown').replace(/-locator$/, '').replace(/-loc$/, '');
 
                       events.forEach(ev => {
-                          const key = getKey(ev);
-                          if (!threads[key]) threads[key] = { locators: [] };
-                          
-                          if (ev.kind === 30059) {
-                              threads[key].service = ev;
-                          } else if (ev.kind === 30058) {
-                              threads[key].locators.push(ev);
-                          }
+                          const baseId = getBaseId(ev);
+                          if (!threads[baseId]) threads[baseId] = { locators: [] };
+                          if (ev.kind === 30059) threads[baseId].service = ev;
+                          else if (ev.kind === 30058) threads[baseId].locators.push(ev);
                       });
 
-                      // Filter threads based on expiration visibility
-                      const activeThreads = Object.entries(threads).filter(([_, thread]) => {
-                          if (showExpired) return true; // Show everything
-                          
-                          // Hide if service is expired (if present)
-                          if (thread.service && isExpired(thread.service)) {
-                              // But if it has active locators, maybe keep it? 
-                              // Strict approach: if service def is expired, the service is dead.
-                              return false;
-                          }
-                          
-                          // Check locators
-                          const hasActiveLocators = thread.locators.some(l => !isExpired(l));
-                          if (hasActiveLocators) return true;
-                          
-                          // If service is active but no active locators -> Keep it (orphaned service def)
-                          if (thread.service && !isExpired(thread.service)) return true;
-
-                          return false; 
+                      const activeThreadKeys = Object.keys(threads).sort().filter(k => {
+                          if (showExpired) return true;
+                          const t = threads[k];
+                          return (t.service && !isExpired(t.service)) || t.locators.some(l => !isExpired(l));
                       });
                       
-                      if (activeThreads.length === 0) return null;
+                      if (activeThreadKeys.length === 0) return null;
 
                       return (
                           <div key={pubkey} className="card bg-base-100 shadow-md border border-base-300">
                               <div className="card-body p-4">
-                                  {/* Publisher Header */}
                                   <div className="flex items-center gap-3 mb-4 pb-2 border-b border-base-200">
-                                      <div className="avatar placeholder">
-                                          <div className="bg-neutral text-neutral-content rounded-full w-10">
-                                              <span className="text-xs">{displayName.slice(0, 2).toUpperCase()}</span>
-                                          </div>
-                                      </div>
-                                      <div>
-                                          <div className="font-bold text-lg">{displayName}</div>
-                                          <div className="text-xs font-mono opacity-50">{npub.slice(0, 12)}...{npub.slice(-6)}</div>
-                                      </div>
+                                      <div className="avatar placeholder"><div className="bg-neutral text-neutral-content rounded-full w-10"><span>{displayName.slice(0, 2).toUpperCase()}</span></div></div>
+                                      <div><div className="font-bold">{displayName}</div><div className="text-[10px] opacity-50">{npub.slice(0, 20)}...</div></div>
                                   </div>
-
-                                  {/* Services List */}
                                   <div className="space-y-4">
-                                      {activeThreads.map(([dTag, thread], i) => {
-                                          const isPrivateService = thread.service && !thread.service.tags.find((t: any) => t[0] === 'u');
-                                          const serviceExpired = thread.service && isExpired(thread.service);
-
+                                      {activeThreadKeys.map(baseId => {
+                                          const t = threads[baseId];
+                                          const isPrivate = t.service && !t.service.tags.find((tag: any) => tag[0] === 'u');
+                                          const sExpired = t.service && isExpired(t.service);
                                           return (
-                                              <div key={i} className={`border ${serviceExpired ? 'border-error bg-error/5' : 'border-base-200 bg-base-100'} rounded-box overflow-hidden`}>
-                                                  {/* Service Header */}
-                                                  <div className="p-2 bg-base-200 flex items-center justify-between">
-                                                      <div className="flex items-center gap-2">
-                                                          <div className={`badge ${thread.service ? 'badge-secondary' : 'badge-ghost'} badge-sm`}>
-                                                              {thread.service ? (isPrivateService ? 'Private Service' : 'Service Defined') : 'Locator Only'}
-                                                          </div>
-                                                          <span className="font-bold text-sm">{dTag}</span>
-                                                          {serviceExpired && <div className="badge badge-error badge-xs">EXPIRED</div>}
+                                              <div key={baseId} className="space-y-2">
+                                                  <div className="flex items-center gap-2 px-1"><span className="font-bold text-xs uppercase opacity-70">Service: {baseId}</span>{sExpired && <div className="badge badge-error badge-xs">EXPIRED</div>}</div>
+                                                  <div className={`border ${sExpired ? 'border-error bg-error/5' : 'border-base-200'} rounded-box overflow-hidden ml-2`}>
+                                                      <div className="p-2 bg-base-200/50">
+                                                          {t.service ? (
+                                                              <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                                  <input type="checkbox" /> 
+                                                                  <div className="collapse-title text-xs font-bold py-2 min-h-0 flex items-center gap-2">NCC-02 Record {isPrivate && <Lock className="w-3 h-3 text-warning" />}{sExpired && <AlertTriangle className="w-3 h-3 text-error" />}</div>
+                                                                  <div className="collapse-content"><pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded mt-2">{JSON.stringify(t.service, null, 2)}</pre></div>
+                                                              </div>
+                                                          ) : <div className="text-[10px] opacity-50 p-1">No NCC-02</div>}
                                                       </div>
-                                                  </div>
-
-                                                  {/* Service Body */}
-                                                  <div className="p-2 space-y-2">
-                                                      {/* NCC-02 Record */}
-                                                      {thread.service && (
-                                                          <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
-                                                              <input type="checkbox" /> 
-                                                              <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
-                                                                  📄 Policy (NCC-02)
-                                                                  {isPrivateService && <Lock className="w-3 h-3 text-warning" />}
-                                                                  {serviceExpired && <AlertTriangle className="w-3 h-3 text-error" />}
+                                                      {/* 3. NCC-05 Locators (The Endpoints) */}
+                                                      <div className="p-2 space-y-2 bg-base-100">
+                                                          <div className="text-[9px] font-bold opacity-30 ml-4 uppercase">Locators</div>
+                                                          {/* Public Endpoints from NCC-02 (if any) */}
+                                                          {t.service && t.service.tags.filter((tag: any) => tag[0] === 'u').map((tag: any, idx: number) => (
+                                                              <div key={`u-${idx}`} className="ml-4 pl-2 border-l-2 border-secondary/50 flex items-center justify-between p-2 bg-base-200/30 rounded text-xs">
+                                                                  <span className="font-mono">{tag[1]}</span>
+                                                                  <button className="btn btn-xs btn-secondary" onClick={() => onConnect(tag[1])}>
+                                                                      Connect (Public)
+                                                                  </button>
                                                               </div>
-                                                              <div className="collapse-content"> 
-                                                                  <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                                      {JSON.stringify(thread.service, null, 2)}
-                                                                  </pre>
-                                                              </div>
-                                                          </div>
-                                                      )}
+                                                          ))}
 
-                                                      {/* NCC-05 Locators */}
-                                                      {thread.locators.map((loc) => {
-                                                          const targeted = isTargetedToMe(loc.pubkey);
-                                                          const isEncrypted = !loc.content.trim().startsWith('{');
-                                                          const decrypted = decryptedPayloads[loc.id];
-                                                          const locExpired = isExpired(loc);
-                                                          
-                                                          if (!showExpired && locExpired) return null;
+                                                          {t.locators.length > 0 ? (
+                                                              t.locators.map((loc: any) => {
+                                                                  const targeted = isTargetedToMe(loc.pubkey);
+                                                                  const isEncrypted = !loc.content.trim().startsWith('{');
+                                                                  const decrypted = decryptedPayloads[loc.id];
+                                                                  const locExpired = isExpired(loc);
+                                                                  
+                                                                  if (!showExpired && locExpired) return null;
+                                                                  
+                                                                  // Extract endpoints from decrypted payload or public content
+                                                                  let endpoints: any[] = [];
+                                                                  try {
+                                                                      const data = decrypted || (!isEncrypted ? JSON.parse(loc.content) : null);
+                                                                      if (data && data.endpoints) {
+                                                                          endpoints = data.endpoints;
+                                                                      }
+                                                                  } catch (e) { /* ignore */ }
 
-                                                          return (
-                                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : locExpired ? 'border-error' : 'border-primary'} pl-2`}>
-                                                                  <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
-                                                                      <input type="checkbox" /> 
-                                                                      <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
-                                                                          <span>📍 Endpoint (NCC-05)</span>
-                                                                          <span className="opacity-50 text-[10px]">
-                                                                              {new Date(loc.created_at * 1000).toLocaleTimeString()}
-                                                                          </span>
-                                                                          {targeted && (
-                                                                              <div className="badge badge-success badge-xs gap-1">
-                                                                                  <User className="w-2 h-2" />
-                                                                                  For You
+                                                                  return (
+                                                                      <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : locExpired ? 'border-error' : 'border-primary'} pl-2`}>
+                                                                          <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box shadow-sm">
+                                                                              <input type="checkbox" /> 
+                                                                              <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
+                                                                                  <span>📍 NCC-05 Endpoint</span>
+                                                                                  <span className="opacity-50 text-[10px]">
+                                                                                      {new Date(loc.created_at * 1000).toLocaleTimeString()}
+                                                                                  </span>
+                                                                                  {targeted && (
+                                                                                      <div className="badge badge-success badge-xs gap-1">
+                                                                                          <User className="w-2 h-2" />
+                                                                                          For You
+                                                                                      </div>
+                                                                                  )}
+                                                                                  {locExpired && (
+                                                                                       <div className="badge badge-error badge-xs gap-1">
+                                                                                          <AlertTriangle className="w-2 h-2" />
+                                                                                          Expired
+                                                                                      </div>
+                                                                                  )}
+                                                                                  {isEncrypted && !decrypted && (
+                                                                                      <div className="badge badge-warning badge-xs gap-1">
+                                                                                          <Lock className="w-2 h-2" />
+                                                                                          Encrypted
+                                                                                      </div>
+                                                                                  )}
+                                                                                  {decrypted && (
+                                                                                      <div className="badge badge-info badge-xs gap-1">
+                                                                                          <Unlock className="w-2 h-2" />
+                                                                                          Decrypted
+                                                                                      </div>
+                                                                                  )}
                                                                               </div>
-                                                                          )}
-                                                                          {locExpired && (
-                                                                               <div className="badge badge-error badge-xs gap-1">
-                                                                                  <AlertTriangle className="w-2 h-2" />
-                                                                                  Expired
+                                                                              <div className="collapse-content"> 
+                                                                                  {isEncrypted && !decrypted ? (
+                                                                                      <div className="flex flex-col gap-2 p-2">
+                                                                                          <button 
+                                                                                            className="btn btn-xs btn-neutral"
+                                                                                            onClick={(e) => { e.stopPropagation(); handleDecryptClick(loc); }}
+                                                                                          >
+                                                                                             Attempt Decrypt
+                                                                                          </button>
+                                                                                      </div>
+                                                                                  ) : (
+                                                                                      <div className="space-y-2 mt-2">
+                                                                                          {/* Actionable Endpoints */}
+                                                                                          {endpoints.length > 0 && (
+                                                                                              <div className="flex flex-wrap gap-2 mb-2">
+                                                                                                  {endpoints.map((ep: any, epIdx: number) => {
+                                                                                                      let url = ep.url || ep.uri;
+                                                                                                      // Protocol Normalization
+                                                                                                      if (url && !url.includes('://')) {
+                                                                                                          url = url.includes('.onion') ? `ws://${url}` : `wss://${url}`;
+                                                                                                      }
+                                                                                                      // Check if it's a relay-compatible protocol
+                                                                                                      const isRelay = url && (url.startsWith('ws') || url.startsWith('wss'));
+                                                                                                      
+                                                                                                      return (
+                                                                                                          <button 
+                                                                                                              key={epIdx}
+                                                                                                              className={`btn btn-xs ${isRelay ? 'btn-primary' : 'btn-outline'}`}
+                                                                                                              onClick={() => isRelay ? onConnect(url) : window.open(url, '_blank')}
+                                                                                                              title={`Priority: ${ep.priority}`}
+                                                                                                          >
+                                                                                                              {ep.family === 'onion' && '🧅 '}
+                                                                                                              Connect {ep.type || (isRelay ? 'Relay' : 'Web')}
+                                                                                                          </button>
+                                                                                                      );
+                                                                                                  })}
+                                                                                              </div>
+                                                                                          )}
+                                                                                          <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                                                              {JSON.stringify(decrypted || loc, null, 2)}
+                                                                                          </pre>
+                                                                                      </div>
+                                                                                  )}
                                                                               </div>
-                                                                          )}
-                                                                          {isEncrypted && !decrypted && (
-                                                                              <div className="badge badge-warning badge-xs gap-1">
-                                                                                  <Lock className="w-2 h-2" />
-                                                                                  Encrypted
-                                                                              </div>
-                                                                          )}
-                                                                          {decrypted && (
-                                                                              <div className="badge badge-info badge-xs gap-1">
-                                                                                  <Unlock className="w-2 h-2" />
-                                                                                  Decrypted
-                                                                              </div>
-                                                                          )}
+                                                                          </div>
                                                                       </div>
-                                                                      <div className="collapse-content"> 
-                                                                          {isEncrypted && !decrypted ? (
-                                                                              <div className="flex flex-col gap-2 p-2">
-                                                                                  <button 
-                                                                                    className="btn btn-xs btn-neutral"
-                                                                                    onClick={(e) => { e.stopPropagation(); handleDecryptClick(loc); }}
-                                                                                  >
-                                                                                     Attempt Decrypt
-                                                                                  </button>
-                                                                              </div>
-                                                                          ) : (
-                                                                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                                                  {JSON.stringify(decrypted || loc, null, 2)}
-                                                                              </pre>
-                                                                          )}
-                                                                      </div>
-                                                                  </div>
-                                                              </div>
-                                                          );
-                                                      })}
-
-                                                      {thread.locators.filter(l => showExpired || !isExpired(l)).length === 0 && (
-                                                          <div className="text-xs opacity-50 italic ml-4 p-2">
-                                                              No active locators found.
-                                                          </div>
-                                                      )}
+                                                                  );
+                                                              })
+                                                          ) : (
+                                                              <div className="text-[10px] opacity-50 ml-6 italic">No active locators.</div>
+                                                          )}
+                                                      </div>
                                                   </div>
                                               </div>
                                           );
@@ -524,31 +421,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
            </div>
         )}
 
-        {/* Success / Connect */}
         {resolvedEndpoint && step === 'complete' && (
           <div className="mt-6 p-4 bg-base-200 rounded-box border border-success">
-             <div className="flex items-center gap-2 mb-4">
-                <ShieldCheck className="text-success w-6 h-6" />
-                <div>
-                   <h4 className="font-bold">Discovery Successful</h4>
-                   <p className="text-sm opacity-70">
-                     Found <strong>{resolvedEndpoint.type}</strong> at: <br/>
-                     <span className="font-mono bg-base-100 px-1 rounded">
-                        {resolvedEndpoint.url || resolvedEndpoint.uri}
-                     </span>
-                   </p>
-                </div>
-             </div>
-             
-             <button className="btn btn-success w-full" onClick={handleConnect}>
-                Connect to Relay
-                <ArrowRight className="w-4 h-4 ml-2" />
-             </button>
+             <div className="flex items-center gap-2 mb-4"><ShieldCheck className="text-success w-6 h-6" /><div><h4 className="font-bold">Discovery Successful</h4><p className="text-sm opacity-70"><span className="font-mono bg-base-100 px-1 rounded">{resolvedEndpoint.url || resolvedEndpoint.uri}</span></p></div></div>
+             <button className="btn btn-success w-full" onClick={handleConnect}>Connect to Relay<ArrowRight className="w-4 h-4 ml-2" /></button>
           </div>
         )}
       </div>
     </div>
   );
 }
-
-
