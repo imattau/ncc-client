@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
+import { useTracking } from '../context/TrackingContext';
 import { nip19, nip44 } from 'nostr-tools';
 import { Network, ArrowRight, ShieldCheck, AlertTriangle, Lock, User, Unlock } from 'lucide-react';
 import { DEFAULT_RELAYS } from '../lib/relays';
@@ -12,6 +13,7 @@ interface DiscoveryProps {
 export function Discovery({ onConnect }: DiscoveryProps) {
   const { ncc05Resolver, ncc02Resolver, pool } = useNCC();
   const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
+  const { trackService, isTracked } = useTracking();
   
   const [pubkeyInput, setPubkeyInput] = useState('');
   const [serviceId, setServiceId] = useState(''); // Empty for "all"
@@ -454,7 +456,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         {resolvedEndpoint && step === 'complete' && (
           <div className="mt-6 p-4 bg-base-200 rounded-box border border-success">
              <div className="flex items-center gap-2 mb-4"><ShieldCheck className="text-success w-6 h-6" /><div><h4 className="font-bold">Discovery Successful</h4><p className="text-sm opacity-70"><span className="font-mono bg-base-100 px-1 rounded">{resolvedEndpoint.url || resolvedEndpoint.uri}</span></p></div></div>
-             <button className="btn btn-success w-full" onClick={handleConnect}>Connect to Relay<ArrowRight className="w-4 h-4 ml-2" /></button>
+             <button className="btn btn-success w-full" onClick={() => handleConnect()}>Connect to Relay<ArrowRight className="w-4 h-4 ml-2" /></button>
           </div>
         )}
       </div>

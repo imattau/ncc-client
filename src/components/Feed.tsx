@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
-import { SimplePool, Event } from 'nostr-tools';
-import { Radio, User } from 'lucide-react';
+import { SimplePool, Event, Relay } from 'nostr-tools';
+import { Radio, User, RefreshCw, AlertCircle } from 'lucide-react';
 
 interface FeedProps {
   relayUrl: string | null;
@@ -17,6 +17,7 @@ export function Feed({ relayUrl }: FeedProps) {
   const [events, setEvents] = useState<Event[]>([]);
   const [profiles, setProfiles] = useState<Record<string, UserProfile>>({});
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const pool = useRef(new SimplePool());
   
   // Clear events when relay changes
@@ -24,19 +25,38 @@ export function Feed({ relayUrl }: FeedProps) {
     setEvents([]);
     setProfiles({});
     setStatus('disconnected');
+    setErrorMsg(null);
   }, [relayUrl]);
 
-  // Fetch Feed (Kind 1)
-  useEffect(() => {
+  const connectAndSubscribe = async () => {
     if (!relayUrl) return;
 
     setStatus('connecting');
-    
+    setErrorMsg(null);
+    setEvents([]);
+
+    console.log(`[Feed] Attempting to connect to ${relayUrl}...`);
+
+    try {
+        // Explicitly test connection first
+        // This ensures we don't just sit in 'connecting' forever or fake it
+        const r = await Relay.connect(relayUrl);
+        console.log(`[Feed] Connection verified to ${relayUrl}`);
+        r.close(); // Close the test connection, let SimplePool manage the real one
+    } catch (e: any) {
+        console.error(`[Feed] Connection failed:`, e);
+        setStatus('error');
+        setErrorMsg(e.message || "Connection timed out or refused.");
+        return;
+    }
+
+    // Subscribe via Pool
     const sub = pool.current.subscribeMany(
       [relayUrl],
       [{ kinds: [1], limit: 40 }] as any,
       {
         onevent(event) {
+          console.debug(`[Feed] Event received:`, event.id);
           setEvents(prev => {
             if (prev.find(e => e.id === event.id)) return prev;
             return [event, ...prev].sort((a, b) => b.created_at - a.created_at);
@@ -44,6 +64,7 @@ export function Feed({ relayUrl }: FeedProps) {
           setStatus('connected');
         },
         oneose() {
+           console.log(`[Feed] EOSE (End of Stored Events) received.`);
            setStatus('connected');
         }
       }
@@ -52,6 +73,15 @@ export function Feed({ relayUrl }: FeedProps) {
     return () => {
       sub.close();
     };
+  };
+
+  useEffect(() => {
+    if (relayUrl) {
+        const cleanupPromise = connectAndSubscribe();
+        return () => {
+            cleanupPromise.then(cleanup => cleanup && cleanup());
+        };
+    }
   }, [relayUrl]);
 
   // Fetch Profiles (Kind 0) for new authors
@@ -80,12 +110,10 @@ export function Feed({ relayUrl }: FeedProps) {
       }
     );
     
-    // We don't necessarily need to keep this open forever, but for a live feed it's okay.
-    // Ideally we'd one-off query or batch it better, but subscribe works for now.
     return () => {
        sub.close();
     };
-  }, [events, relayUrl]); // Re-run when events change (to catch new authors)
+  }, [events, relayUrl]);
 
   if (!relayUrl) {
     return (
@@ -100,18 +128,40 @@ export function Feed({ relayUrl }: FeedProps) {
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between bg-base-100 p-4 rounded-box shadow-sm border border-base-200">
-        <div className="flex items-center gap-2">
-           <div className={`badge ${status === 'connected' ? 'badge-success' : status === 'connecting' ? 'badge-warning' : 'badge-error'} badge-xs`}></div>
-           <span className="font-mono text-sm">{relayUrl}</span>
+        <div className="flex items-center gap-3">
+           <div className={`badge ${status === 'connected' ? 'badge-success' : status === 'connecting' ? 'badge-warning' : 'badge-error'} badge-xs animate-pulse`}></div>
+           <div className="flex flex-col">
+               <span className="font-mono text-sm font-bold">{relayUrl}</span>
+               <span className="text-xs opacity-50 capitalize">
+                   {status} {status === 'connected' && `(${events.length} events)`}
+               </span>
+           </div>
         </div>
-        <div className="text-xs opacity-50">
-           {status === 'connected' ? 'Live' : status}
+        <div>
+            {status === 'error' ? (
+                <button className="btn btn-sm btn-error" onClick={() => connectAndSubscribe()}>
+                    <RefreshCw className="w-4 h-4 mr-2" />
+                    Retry
+                </button>
+            ) : (
+                <div className="text-xs opacity-50">Live Feed</div>
+            )}
         </div>
       </div>
 
+      {status === 'error' && (
+          <div className="alert alert-error text-sm">
+              <AlertCircle className="w-4 h-4" />
+              <span>Failed to connect: {errorMsg}</span>
+          </div>
+      )}
+
       <div className="space-y-4">
         {events.length === 0 && status === 'connected' && (
-           <div className="text-center p-8 opacity-50">No events found on this relay yet.</div>
+           <div className="text-center p-12 opacity-50 border-2 border-dashed border-base-200 rounded-box">
+               <div className="loading loading-dots loading-md mb-2"></div>
+               <p>Connected. Waiting for events...</p>
+           </div>
         )}
         
         {events.map(ev => {
@@ -126,9 +176,9 @@ export function Feed({ relayUrl }: FeedProps) {
                    <div className="avatar">
                      <div className="w-10 h-10 rounded-full bg-base-300">
                        {profile?.picture ? (
-                         <img src={profile.picture} alt={name} onError={(e) => (e.currentTarget.src = 'https://ui-avatars.com/api/?name=' + name)} />
+                         <img src={profile.picture} alt={name} onError={(e) => (e.currentTarget.src = `https://api.dicebear.com/7.x/identicon/svg?seed=${ev.pubkey}`)} />
                        ) : (
-                         <div className="flex items-center justify-center w-full h-full text-base-content/30">
+                         <div className="flex items-center justify-center w-full h-full text-base-content/30 bg-base-200">
                             <User className="w-5 h-5" />
                          </div>
                        )}
@@ -138,12 +188,12 @@ export function Feed({ relayUrl }: FeedProps) {
                    {/* Content */}
                    <div className="flex-1 min-w-0">
                      <div className="flex items-center justify-between mb-1">
-                       <div className="font-bold text-sm truncate">{name}</div>
-                       <div className="text-[10px] opacity-50 whitespace-nowrap ml-2">
-                         {new Date(ev.created_at * 1000).toLocaleString()}
+                       <div className="font-bold text-sm truncate text-primary">{name}</div>
+                       <div className="text-[10px] opacity-50 whitespace-nowrap ml-2 font-mono">
+                         {new Date(ev.created_at * 1000).toLocaleTimeString()}
                        </div>
                      </div>
-                     <p className="whitespace-pre-wrap break-words text-sm">{ev.content}</p>
+                     <p className="whitespace-pre-wrap break-words text-sm leading-relaxed">{ev.content}</p>
                    </div>
                  </div>
               </div>
