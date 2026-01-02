@@ -1,7 +1,8 @@
 import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
+import { useAuth } from '../context/AuthContext';
 import { nip19 } from 'nostr-tools';
-import { Network, ArrowRight, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { Network, ArrowRight, ShieldCheck, AlertTriangle, Lock, User } from 'lucide-react';
 import { DEFAULT_RELAYS } from '../lib/relays';
 
 interface DiscoveryProps {
@@ -10,6 +11,7 @@ interface DiscoveryProps {
 
 export function Discovery({ onConnect }: DiscoveryProps) {
   const { ncc05Resolver, ncc02Resolver, pool } = useNCC();
+  const { pubkey: myPubkey } = useAuth();
   
   const [pubkeyInput, setPubkeyInput] = useState('');
   const [serviceId, setServiceId] = useState(''); // Empty for "all"
@@ -164,7 +166,6 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   };
 
 
-
   const handleConnect = () => {
     if (!resolvedEndpoint) return;
     
@@ -282,13 +283,16 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                             const pubkey = root.pubkey;
                             const displayName = getDisplayName(pubkey);
 
+                            // Private Service Detection: No 'u' (endpoint) tag in 30059
+                            const isPrivateService = thread.service && !thread.service.tags.find((t: any) => t[0] === 'u');
+
                             return (
                                 <div key={i} className="border border-base-300 bg-base-100 rounded-box overflow-hidden">
                                     {/* Thread Header */}
                                     <div className="p-3 bg-base-200 flex items-center justify-between">
                                         <div className="flex items-center gap-2">
                                             <div className={`badge ${thread.service ? 'badge-secondary' : 'badge-ghost'} badge-sm`}>
-                                                {thread.service ? 'Service Defined' : 'Locator Only'}
+                                                {thread.service ? (isPrivateService ? 'Private Service' : 'Service Defined') : 'Locator Only'}
                                             </div>
                                             <span className="font-bold text-sm">{dTag}</span>
                                         </div>
@@ -302,8 +306,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                         {thread.service && (
                                             <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
                                                 <input type="checkbox" /> 
-                                                <div className="collapse-title text-xs font-mono py-2 min-h-0">
+                                                <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
                                                     📄 Policy / Definition (NCC-02)
+                                                    {isPrivateService && <Lock className="w-3 h-3 text-warning" />}
                                                 </div>
                                                 <div className="collapse-content"> 
                                                     <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
@@ -314,24 +319,34 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                         )}
 
                                         {/* 2. The Locators (Children) */}
-                                        {thread.locators.map((loc) => (
-                                            <div key={loc.id} className="ml-4 border-l-2 border-primary pl-2">
-                                                <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
-                                                    <input type="checkbox" /> 
-                                                    <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
-                                                        <span>📍 Endpoint (NCC-05)</span>
-                                                        <span className="opacity-50 text-[10px]">
-                                                            Updated: {new Date(loc.created_at * 1000).toLocaleTimeString()}
-                                                        </span>
-                                                    </div>
-                                                    <div className="collapse-content"> 
-                                                        <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                            {JSON.stringify(loc, null, 2)}
-                                                        </pre>
-                                                    </div>
-                                                </div>
-                                            </div>
-                                        ))}
+                                        {thread.locators.map((loc) => {
+                                            const isTargetedToMe = myPubkey && loc.tags.find((t: any) => t[0] === 'p' && t[1] === myPubkey);
+
+                                            return (
+                                              <div key={loc.id} className={`ml-4 border-l-2 ${isTargetedToMe ? 'border-success' : 'border-primary'} pl-2`}>
+                                                  <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                      <input type="checkbox" /> 
+                                                      <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
+                                                          <span>📍 Endpoint (NCC-05)</span>
+                                                          <span className="opacity-50 text-[10px]">
+                                                              {new Date(loc.created_at * 1000).toLocaleTimeString()}
+                                                          </span>
+                                                          {isTargetedToMe && (
+                                                              <div className="badge badge-success badge-xs gap-1">
+                                                                  <User className="w-2 h-2" />
+                                                                  For You
+                                                              </div>
+                                                          )}
+                                                      </div>
+                                                      <div className="collapse-content"> 
+                                                          <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                              {JSON.stringify(loc, null, 2)}
+                                                          </pre>
+                                                      </div>
+                                                  </div>
+                                              </div>
+                                            );
+                                        })}
 
                                         {thread.locators.length === 0 && (
                                             <div className="text-xs opacity-50 italic ml-4 p-2">
