@@ -86,6 +86,6 @@ wss.on('connection', (clientWs, req, targetUrl) => {
   });
 });
 
-server.listen(BRIDGE_PORT, () => {
-  console.log(`✅ Bridge ready: ws://localhost:${BRIDGE_PORT}?target=<ONION_URL>`);
+server.listen(BRIDGE_PORT, '0.0.0.0', () => {
+  console.log(`✅ Bridge ready: ws://<your-ip>:${BRIDGE_PORT}?target=<ONION_URL>`);
 });

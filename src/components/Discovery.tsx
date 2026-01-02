@@ -220,9 +220,10 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         );
         
         if (userChoice) {
-            // Use Bridge
-            const bridgeUrl = `ws://localhost:3001?target=${encodeURIComponent(url)}`;
-            onConnect(bridgeUrl);
+            // Use Bridge - use actual hostname so mobile devices can reach the bridge on the desktop
+            const bridgeHost = window.location.hostname;
+            const bridgeUrl = `ws://${bridgeHost}:3001?target=${encodeURIComponent(url)}`;
+            handleConnect(bridgeUrl, serviceInfo); // Recursively call with bridged URL, preserving service info for tracking
             return;
         } else {
              // Fallback logic
