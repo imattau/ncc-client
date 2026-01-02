@@ -22,8 +22,46 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   // Result
   const [resolvedEndpoint, setResolvedEndpoint] = useState<any>(null);
   const [rawEvents, setRawEvents] = useState<any[]>([]);
+  const [profiles, setProfiles] = useState<Record<string, any>>({});
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
+
+  const fetchProfiles = async (events: any[]) => {
+      const authors = [...new Set(events.map(e => e.pubkey))];
+      if (authors.length === 0) return;
+      
+      try {
+          const profileEvents = await pool.querySync(DEFAULT_RELAYS, {
+              kinds: [0],
+              authors: authors
+          });
+          
+          const profileMap: Record<string, any> = {};
+          profileEvents.forEach(ev => {
+              try {
+                  profileMap[ev.pubkey] = JSON.parse(ev.content);
+              } catch (e) {
+                  // ignore
+              }
+          });
+          setProfiles(prev => ({...prev, ...profileMap}));
+      } catch (e) {
+          console.error("Failed to fetch profiles", e);
+      }
+  };
+
+  const getDisplayName = (pubkey: string) => {
+      const profile = profiles[pubkey];
+      if (profile && (profile.display_name || profile.name)) {
+          return profile.display_name || profile.name;
+      }
+      try {
+          const npub = nip19.npubEncode(pubkey);
+          return `${npub.slice(0, 10)}...${npub.slice(-4)}`;
+      } catch (e) {
+          return pubkey.slice(0, 8);
+      }
+  };
 
   const handleDiscover = async () => {
     setStep('verifying');
@@ -31,6 +69,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     setError(null);
     setResolvedEndpoint(null);
     setRawEvents([]);
+    setProfiles({});
 
     try {
       let hex = pubkeyInput;
@@ -55,6 +94,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
           const events = await pool.querySync(DEFAULT_RELAYS, filter);
           setRawEvents(events);
+          fetchProfiles(events); // Fetch metadata
           addLog(`✅ Found ${events.length} records globally.`);
           setStep('complete');
           return;
@@ -62,6 +102,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
       // 1. Inspect/Resolve NCC-02
       addLog(`🔍 NCC-02: Querying Kind 30059 events...`);
+      let allEvents: any[] = [];
       
       // If serviceId is provided, we use the library resolver.
       // If not, we'll manually fetch kind 30059 to see what's available.
@@ -77,7 +118,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
            kinds: [30059],
            authors: [hex]
         });
-        setRawEvents(prev => [...prev, ...events]);
+        allEvents = [...allEvents, ...events];
         addLog(`✅ NCC-02: Found ${events.length} service records.`);
       }
       
@@ -98,10 +139,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
             kinds: [30058],
             authors: [hex]
          });
-         setRawEvents(prev => [...prev, ...events]);
+         allEvents = [...allEvents, ...events];
          addLog(`✅ NCC-05: Found ${events.length} locator records.`);
       }
       
+      setRawEvents(allEvents);
+      fetchProfiles(allEvents); // Fetch metadata
+
       if (!serviceId) {
          setStep('complete');
       } else if (resolvedEndpoint) {
@@ -118,6 +162,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       setStep('idle');
     }
   };
+
 
 
   const handleConnect = () => {
@@ -210,8 +255,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                     {rawEvents.filter(e => e.kind === 30059).map((ev) => (
                         <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
                           <input type="radio" name="events-accordion" /> 
-                          <div className="collapse-title text-xs font-mono">
-                              d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
+                          <div className="collapse-title text-xs font-mono flex items-center justify-between pr-8">
+                              <span>d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
+                              <span className="opacity-50 ml-2 truncate max-w-[150px]">{getDisplayName(ev.pubkey)}</span>
                           </div>
                           <div className="collapse-content"> 
                               <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
@@ -232,8 +278,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                     {rawEvents.filter(e => e.kind === 30058).map((ev) => (
                         <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
                           <input type="radio" name="events-accordion" /> 
-                          <div className="collapse-title text-xs font-mono">
-                              d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
+                          <div className="collapse-title text-xs font-mono flex items-center justify-between pr-8">
+                              <span>d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
+                              <span className="opacity-50 ml-2 truncate max-w-[150px]">{getDisplayName(ev.pubkey)}</span>
                           </div>
                           <div className="collapse-content"> 
                               <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
