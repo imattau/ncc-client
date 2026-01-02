@@ -14,7 +14,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/mattthomson/ncc-client.git"
+    "url": "git+https://github.com/imattau/ncc-client.git"
   },
   "keywords": [
     "nostr",
@@ -41,8 +41,8 @@
     "buffer": "^6.0.3",
     "clsx": "^2.1.0",
     "lucide-react": "^0.344.0",
-    "ncc-02-js": "file:../ncc-02/ncc-02-js",
-    "ncc-05-js": "file:../ncc-05/ncc-05-js",
+    "ncc-02-js": "^0.3.1",
+    "ncc-05-js": "^1.1.14",
     "nostr-tools": "^2.1.5",
     "qrcode.react": "^4.2.0",
     "react": "^18.2.0",
