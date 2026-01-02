@@ -201,21 +201,50 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         {rawEvents.length > 0 && (
            <div className="mt-4">
               <h4 className="text-sm font-bold mb-2">Found Events ({rawEvents.length})</h4>
-              <div className="space-y-2">
-                 {rawEvents.map((ev, i) => (
-                    <div key={i} className="collapse collapse-arrow bg-base-200 border border-base-300">
-                       <input type="radio" name="events-accordion" /> 
-                       <div className="collapse-title text-xs font-mono">
-                          Kind {ev.kind} - d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
-                       </div>
-                       <div className="collapse-content"> 
-                          <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                             {JSON.stringify(ev, null, 2)}
-                          </pre>
-                       </div>
-                    </div>
-                 ))}
-              </div>
+              
+              {/* NCC-02 Group */}
+              {rawEvents.filter(e => e.kind === 30059).length > 0 && (
+                <div className="mb-4">
+                  <h5 className="text-xs font-bold text-secondary mb-1">NCC-02 (Service Records - 30059)</h5>
+                  <div className="space-y-2">
+                    {rawEvents.filter(e => e.kind === 30059).map((ev) => (
+                        <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
+                          <input type="radio" name="events-accordion" /> 
+                          <div className="collapse-title text-xs font-mono">
+                              d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
+                          </div>
+                          <div className="collapse-content"> 
+                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                {JSON.stringify(ev, null, 2)}
+                              </pre>
+                          </div>
+                        </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* NCC-05 Group */}
+              {rawEvents.filter(e => e.kind === 30058).length > 0 && (
+                <div>
+                  <h5 className="text-xs font-bold text-primary mb-1">NCC-05 (Service Locators - 30058)</h5>
+                  <div className="space-y-2">
+                    {rawEvents.filter(e => e.kind === 30058).map((ev) => (
+                        <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
+                          <input type="radio" name="events-accordion" /> 
+                          <div className="collapse-title text-xs font-mono">
+                              d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
+                          </div>
+                          <div className="collapse-content"> 
+                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                {JSON.stringify(ev, null, 2)}
+                              </pre>
+                          </div>
+                        </div>
+                    ))}
+                  </div>
+                </div>
+              )}
            </div>
         )}
 
