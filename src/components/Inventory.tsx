@@ -24,7 +24,7 @@ const escapeHtml = (str: string) => {
 };
 
 export function Inventory() {
-    const { pubkey: currentPubkey, privkey: currentPrivkey, method } = useAuth();
+    const { pubkey: currentPubkey, method, signEvent } = useAuth();
     const { pool } = useNCC();
     
     const [identities, setIdentities] = useState<ManagedIdentity[]>(() => {
@@ -37,10 +37,11 @@ export function Inventory() {
     const [loading, setLoading] = useState(false);
     const [records, setRecords] = useState<any[]>([]);
 
-    // Persist identities
-    useEffect(() => {
-        localStorage.setItem('ncc_managed_identities', JSON.stringify(identities));
-    }, [identities]);
+    const [editingRecord, setEditingRecord] = useState<any>(null);
+    const [editContent, setEditContent] = useState('');
+
+    const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+    const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
 
     const allManagedPubkeys = [
         ...(currentPubkey ? [currentPubkey] : []),
@@ -73,6 +74,11 @@ export function Inventory() {
             setLoading(false);
         }
     };
+
+    // Persist identities
+    useEffect(() => {
+        localStorage.setItem('ncc_managed_identities', JSON.stringify(identities));
+    }, [identities]);
 
     useEffect(() => {
         scanRecords();
@@ -123,39 +129,34 @@ export function Inventory() {
         setIdentities(identities.filter(i => i.pubkey !== pk));
     };
 
-    const [editingRecord, setEditingRecord] = useState<any>(null);
-    const [editContent, setEditContent] = useState('');
-
     const handleRenew = async (rec: any) => {
         const iden = identities.find(i => i.pubkey === rec.pubkey);
-        const pk = iden?.privkey || (rec.pubkey === currentPubkey ? currentPrivkey : null);
+        const auxiliaryNsec = iden?.privkey;
         
-        if (!pk && (rec.pubkey !== currentPubkey || method !== 'nip07')) {
-            alert("No private key available for this identity.");
-            return;
-        }
-
         setLoading(true);
         try {
             const now = Math.floor(Date.now() / 1000);
-            const newEvent = { ...rec };
-            delete (newEvent as any).id;
-            delete (newEvent as any).sig;
-            newEvent.created_at = now;
+            const newEvent = { 
+                kind: rec.kind,
+                created_at: now,
+                tags: [...rec.tags],
+                content: rec.content,
+                pubkey: rec.pubkey
+            };
 
             // Update expiry tag if it exists (for NCC-02)
             const expIdx = newEvent.tags.findIndex((t: any) => t[0] === 'exp');
             if (expIdx !== -1) {
                 const newExp = now + (30 * 24 * 60 * 60); // +30 days
-                newEvent.tags[expIdx][1] = newExp.toString();
+                newEvent.tags[expIdx] = ['exp', newExp.toString()];
             }
 
             let signed;
-            if (pk) {
+            if (auxiliaryNsec) {
                 const { finalizeEvent } = await import('nostr-tools/pure');
-                signed = finalizeEvent(newEvent, hexToBytes(pk));
+                signed = finalizeEvent(newEvent, hexToBytes(auxiliaryNsec));
             } else {
-                signed = await window.nostr!.signEvent(newEvent);
+                signed = await signEvent(newEvent);
             }
 
             await pool.publish(RelayManager.load(), signed);
@@ -171,20 +172,24 @@ export function Inventory() {
     const handleSaveEdit = async () => {
         if (!editingRecord) return;
         const iden = identities.find(i => i.pubkey === editingRecord.pubkey);
-        const pk = iden?.privkey || (editingRecord.pubkey === currentPubkey ? currentPrivkey : null);
+        const auxiliaryNsec = iden?.privkey;
 
         setLoading(true);
         try {
-            const updated = { ...editingRecord, content: editContent, created_at: Math.floor(Date.now() / 1000) };
-            delete updated.id;
-            delete updated.sig;
+            const updated = { 
+                kind: editingRecord.kind,
+                content: editContent, 
+                created_at: Math.floor(Date.now() / 1000),
+                tags: [...editingRecord.tags],
+                pubkey: editingRecord.pubkey
+            };
 
             let signed;
-            if (pk) {
+            if (auxiliaryNsec) {
                 const { finalizeEvent } = await import('nostr-tools/pure');
-                signed = finalizeEvent(updated, hexToBytes(pk));
+                signed = finalizeEvent(updated, hexToBytes(auxiliaryNsec));
             } else {
-                signed = await window.nostr!.signEvent(updated);
+                signed = await signEvent(updated);
             }
 
             await pool.publish(RelayManager.load(), signed);
@@ -197,9 +202,6 @@ export function Inventory() {
             setLoading(false);
         }
     };
-
-    const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-    const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
 
     return (
         <div className="space-y-6">

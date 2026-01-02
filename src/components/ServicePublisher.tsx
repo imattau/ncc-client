@@ -7,7 +7,7 @@ import { nip19 } from 'nostr-tools';
 import clsx from 'clsx';
 
 export function ServicePublisher() {
-  const { privkey, method } = useAuth();
+  const { signEvent, method } = useAuth();
   const { ncc05Publisher } = useNCC();
   
   const [isPrivate, setIsPrivate] = useState(false);
@@ -71,10 +71,8 @@ export function ServicePublisher() {
 
       // Publish record
       // The library's ncc05Publisher needs a signer. 
-      // If we have privkey (nsec), we use it. 
-      // If method is nip07, we pass null/undefined for privkey and let it use window.nostr internally if supported,
-      // or we handle the signing/encryption manually.
-      await ncc05Publisher.publish(RelayManager.load(), privkey as any, payload, { 
+      // We pass a custom signer function that uses our unified AuthContext.signEvent
+      await ncc05Publisher.publish(RelayManager.load(), signEvent as any, payload, { 
           public: !isPrivate, 
           identifier: 'addr',
           recipientPubkey: recipientList[0] // Encrypt for the first recipient in the PoC

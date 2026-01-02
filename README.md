@@ -1,6 +1,6 @@
-# NCC Client PoC: Services Without DNS
+# NCC Client PoC: Infrastructure Management & Discovery Without DNS
 
-A reference implementation and Proof of Concept (PoC) for the **Nostr Community Conventions (NCC)**, specifically focusing on **NCC-02** (Trust and Discovery) and **NCC-05** (Identity-Bound Service Locators).
+A reference implementation and Proof of Concept (PoC) for the **Nostr Community Conventions (NCC)**, specifically focusing on **NCC-01** (Service Details), **NCC-02** (Trust and Discovery), and **NCC-05** (Identity-Bound Service Locators).
 
 This client demonstrates how to build a decentralized infrastructure where **Nostr Identities (Pubkeys)** replace traditional **DNS Hostnames**.
 
@@ -8,81 +8,81 @@ This client demonstrates how to build a decentralized infrastructure where **Nos
 
 In this model, services (like Nostr relays, media servers, or chat rooms) are not found via standard DNS lookups. Instead:
 1. **Ownership (NCC-02):** An identity publishes a record (Kind 30059) claiming ownership of a service identifier (e.g., `relay`).
-2. **Location (NCC-05):** The identity publishes dynamic locator records (Kind 30058) containing the physical endpoints (IPs, Tor `.onion` addresses).
-3. **Trust:** Users verify ownership and can optionally require third-party attestations (Kind 30060) before connecting.
+2. **Location (NCC-05):** The identity publishes dynamic locator records (Kind 30058) containing physical endpoints (IPs, Tor `.onion` addresses).
+3. **Trust:** Users verify ownership and can optionally require third-party attestations (Kind 30060) or Web of Trust (WoT) validation before connecting.
+
+---
 
 ## ✨ Key Features
 
-### 🔍 Hierarchical Service Discovery
-- **Targeted Discovery:** Enter an `npub` to find all services published by that specific user.
-- **Global Discovery:** Search bootstrap relays for all active NCC services across the network.
-- **Hierarchical View:** Results are logically grouped by **Publisher -> Service -> Endpoints**, reflecting the real-world relationship between identity and infrastructure.
-- **Freshness Tracking:** View "Last Updated" timestamps for every publisher based on their live Nostr activity.
+### 🔍 Discovery & Social Trust (WoT)
+- **Hierarchical Discovery:** Group results by **Publisher -> Service -> Endpoints**.
+- **Social Graph Filtering:** Enable **"Network Only"** mode to only see services authored or attested by people you follow (Kind 3).
+- **Social Proof:** View "✓ Trusted by X in your network" badges to identify socially validated infrastructure.
+- **Aggressive Resolution:** Discover infrastructure via `npub` using an identity-centric resolution engine that scans both public service records and private locators.
 
-### 🔐 Privacy & Encryption
-- **Private Services:** Automatically detects services marked as private (lacking a public `u` tag).
-- **NIP-44 Decryption:** Securely decrypts targeted locator records. Supports both local **NSEC** signing and **NIP-07** browser extensions (e.g., Alby).
-- **Targeted Audience:** Highlights locators specifically intended for you based on the publisher's `privaterecipients` list.
+### 🔐 Privacy-First Publishing
+- **Targeted Private Locators:** Publish service endpoints that are encrypted (NIP-44) for a specific list of authorized `npubs`.
+- **NIP-07 Support:** Seamlessly decrypt private records using browser extensions like Alby without exposing your private key.
+- **Session-Only Security:** Private keys are stored in `sessionStorage` and cleared automatically when the tab is closed.
 
-### 🧅 Tor Onion Support
-- **Local Sidecar Bridge:** Includes a built-in WebSocket-to-Tor bridge (`scripts/tor-bridge.js`) that allows standard, sandboxed web browsers to speak to Tor Hidden Services.
-- **Mobile Friendly:** Supports Orbot (Android) and Tor Browser users via a "Connect Directly" flow.
-- **Protocol Normalization:** Automatically handles protocol conversion (e.g., `http` -> `ws`) for onion relays.
+### 📦 Infrastructure Management (My Inventory)
+- **Live Fleet Scan:** View all active NCC records published by your primary account and auxiliary service identities.
+- **One-Click Renewal:** Automatically bump `created_at` and `exp` tags to keep your services active and prevent them from appearing as "Expired".
+- **JSON Editor:** Directly modify service metadata or endpoint lists with an integrated record editor.
+- **Identity Swapping:** Manage multiple "owned" identities (via stored `nsecs`) from a single dashboard.
 
-### 📡 Interactive Nostr Feed
-- **NCC-Aware:** A live feed that displays standard Kind 1 notes alongside NCC events (30058-30061).
-- **Rich Metadata:** Automatically fetches user profiles (Kind 0) to display avatars and names for all authors.
-- **Real-time Status:** Continuous monitoring of relay connectivity with auto-reconnect and watchdog timers.
+### 🚀 Sidecar & Tor Integration
+- **Deep Sidecar Integration:** One-click import of local onion services detected from your running `ncc-sidecar` (localhost:3005).
+- **Auto-Bridging:** Onion addresses are automatically wrapped in the local Tor bridge URL for immediate browser reachability.
+- **Endpoint Probing:** Test real-world latency and reachability of any service endpoint before committing to a connection.
+- **Real-time Bridge Monitor:** Navbar indicator showing the health of your local Tor-to-WebSocket bridge.
 
-### ✍️ Trust & Monitoring
-- **One-Click Attestation:** Publicly attest to the validity or trust of a service directly from the Discovery view.
-- **Service Tracking:** Automatically monitors connected services for live endpoint updates. If a relay changes its IP or Onion address, the client detects it immediately.
-- **Expiration Management:** Automatically flags and hides stale or expired service records (based on `ttl` and `exp` tags).
-
-## 🛠️ Technology Stack
-
-- **Framework**: React 18 + Vite (TypeScript)
-- **Styling**: Tailwind CSS + DaisyUI (Mobile-responsive)
-- **Nostr Stack**: `nostr-tools`, `ncc-02-js`, `ncc-05-js`
-- **Sidecar**: Node.js + `ws` + `socks-proxy-agent` (Tor Bridge)
+---
 
 ## 🚀 Getting Started
 
 ### 1. Prerequisites
 - **Node.js**: v18+
-- **Tor (Optional)**: Only required if you want to connect to `.onion` relays. A local Tor daemon must be running (default port `9050`).
-  - *Linux*: `sudo systemctl start tor`
-  - *Mac*: `brew services start tor`
+- **Tor (Optional)**: Required for `.onion` support. A local Tor daemon must be running (default port `9050`).
+- **Nostr Extension**: Alby or nos2x (recommended for secure signing).
 
-### 2. Installation
+### 2. Installation & Development
 ```bash
-git clone <repository-url>
-cd ncc-client
 npm install
-```
-
-### 3. Development
-Start the web app and the Tor bridge concurrently:
-```bash
 npm run dev
 ```
-The app will be available at `http://localhost:5173` (and exposed to your local network).
+The app will be available at `http://localhost:5173`. The Tor bridge will start automatically on port 3001.
 
-### 4. Usage Flow
-1. **Login**: Use an `nsec` or a browser extension.
-2. **Discover**: Go to the Discovery tab and perform a Global Search.
-3. **Decrypt**: If a record is private, click "Decrypt" (requires private key access).
-4. **Connect**: Click an endpoint pill. If it's an onion, select **"Use Bridge"**.
-5. **Feed**: View live data from the resolved relay.
+---
+
+## 🛠 Usage Workflows
+
+### How to Find a Trusted Relay
+1. Go to **Discovery**.
+2. Enable **Network Only (WoT)** to filter by your social graph.
+3. Use **Global Search** or enter a specific `npub`.
+4. Look for the **"Network Trusted"** badge and click an endpoint to connect.
+
+### How to Publish a Private Service
+1. Go to **Publish**.
+2. (Optional) Click **"Detect Local Services"** to import from your sidecar.
+3. Toggle **"Private Discovery"**.
+4. Paste the `npubs` of your authorized users.
+5. Click **"Publish Private"**.
+
+### How to Manage Your Fleet
+1. Go to **My Inventory**.
+2. Click **"Add Identity"** to include your auxiliary service `nsecs`.
+3. Use **"Renew"** to refresh expiring records or **"Edit"** to rotate physical endpoints.
+
+---
 
 ## 🧪 Testing & Debugging
 
-The project includes a suite of tools to verify the "No-DNS" stack:
 - `npm test`: Runs logic and connectivity unit tests.
 - `npm run check-bridge`: Verifies the local Tor bridge is reachable.
-- `npm run check-local`: Tests the health of a local relay on port 8081.
-- `node scripts/test-tor-http.js`: Verifies your system Tor can reach the outside world.
-- `node scripts/scan-onion-ports.js`: Probes an onion address for active ports.
+- `npx tsc --noEmit`: Performs a full TypeScript type check.
 
 ---
 *Built as a Proof of Concept for the Nostr Community Conventions.*

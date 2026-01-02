@@ -3,7 +3,7 @@ import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
 import { useDiscovery } from '../context/DiscoveryContext';
-import { nip19, nip44 } from 'nostr-tools';
+import { nip19 } from 'nostr-tools';
 import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
 import { RelayManager } from '../lib/relays';
 import clsx from 'clsx';
@@ -27,7 +27,7 @@ interface DiscoveryProps {
 
 export function Discovery({ onConnect }: DiscoveryProps) {
   const { ncc02Resolver, pool } = useNCC();
-  const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
+  const { pubkey: myPubkey, signEvent, decryptNip44 } = useAuth();
   const { trackService, isTracked, untrackService } = useTracking();
   const { isFollowing } = useWoT();
   
@@ -158,19 +158,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   };
 
   const handleDecryptClick = async (ev: any) => {
-      if (myPrivkey) {
-          try {
-              const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-              const key = nip44.getConversationKey(hexToBytes(myPrivkey), ev.pubkey);
-              const decrypted = nip44.decrypt(ev.content, key);
-              setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
-          } catch(e) { alert("Decryption failed."); }
-      } else if (window.nostr && window.nostr.nip44) {
-          try {
-              const decrypted = await window.nostr.nip44.decrypt(ev.pubkey, ev.content);
-              setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
-          } catch(e) { alert("Extension decryption failed."); }
-      } else { alert("NIP-44 capability not found."); }
+      try {
+          const decrypted = await decryptNip44(ev.pubkey, ev.content);
+          setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
+      } catch(e: any) {
+          alert("Decryption failed: " + e.message);
+      }
   };
 
   const handleDiscover = async () => {
@@ -206,7 +199,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       // Query all NCC related kinds for this author
       const events = await withTimeout(
           pool.querySync(RelayManager.load(), { 
-              kinds: [30053, 30058, 30059, 30060, 30061], 
+              kinds: [0, 30053, 30058, 30059, 30060, 30061], 
               authors: [hex] 
           }),
           10000,
@@ -317,17 +310,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       };
 
       try {
-          let signedEvent;
-          if (myPrivkey) {
-              const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-              const { finalizeEvent } = await import('nostr-tools/pure');
-              signedEvent = finalizeEvent(eventTemplate, hexToBytes(myPrivkey));
-          } else if (window.nostr) {
-              signedEvent = await window.nostr.signEvent(eventTemplate);
-          } else {
-              return alert("No signing method available. Use NSEC or Extension.");
-          }
-
+          const signedEvent = await signEvent(eventTemplate);
           if (signedEvent) {
               addLog(`✍️ Publishing Attestation for ${dTag}...`);
               await pool.publish(RelayManager.load(), signedEvent);

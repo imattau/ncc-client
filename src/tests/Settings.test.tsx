@@ -67,6 +67,7 @@ describe('Settings Component - Relay Resolution', () => {
         // @ts-ignore
         window.nostr = {
             nip44: {
+                encrypt: vi.fn().mockResolvedValue('encrypted'),
                 decrypt: vi.fn().mockResolvedValue('{"endpoints": [{"url": "ws://xyz.onion"}]}')
             }
         };

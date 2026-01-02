@@ -7,8 +7,8 @@ import { nip19, nip44 } from 'nostr-tools';
 import clsx from 'clsx';
 
 export function Settings() {
-    const { pool, ncc05Resolver } = useNCC();
-    const { pubkey: sessionPubkey, privkey: sessionPrivkey } = useAuth();
+    const { pool } = useNCC();
+    const { privkey: sessionPrivkey } = useAuth();
     const [relays, setRelays] = useState<string[]>(() => RelayManager.load());
     const [health, setHealth] = useState<Record<string, RelayHealth>>({});
     const [newRelay, setNewRelay] = useState('');
@@ -82,8 +82,6 @@ export function Settings() {
                 // Sort everything by freshness (newest first)
                 const sortedEvents = [...events].sort((a, b) => b.created_at - a.created_at);
                 
-                let resolvedUrl: string | null = null;
-
                 // 2. Find the single freshest record with endpoints (ignoring expired)
                 setResolveStatus("Analyzing latest records...");
                 let discovered: string[] = [];
