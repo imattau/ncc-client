@@ -82,25 +82,30 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
   // NOTE: Simple manual decrypt button handler for PoC
   const handleDecryptClick = async (ev: any) => {
-      if (!myPrivkey) {
-          alert("Please login with a private key (nsec) to decrypt.");
-          return;
-      }
-      try {
-           // hexToBytes is needed for nostr-tools v2, but let's check what version we have.
-           // Assuming v2+, keys are Uint8Array.
-           // However, if we get typing errors, we might need a helper.
-           
-           // Simple hex to bytes helper inline if not imported
-           const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-
-           const privKeyBytes = hexToBytes(myPrivkey);
-           const key = nip44.getConversationKey(privKeyBytes, ev.pubkey);
-           const decrypted = nip44.decrypt(ev.content, key);
-           setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
-      } catch(e) {
-          console.error(e);
-          alert("Decryption failed. You may not be the target recipient or the key is incorrect.");
+      // Check for NIP-07 Login
+      if (myPrivkey) {
+          // NSEC Login - Local Decrypt
+          try {
+              const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+              const privKeyBytes = hexToBytes(myPrivkey);
+              const key = nip44.getConversationKey(privKeyBytes, ev.pubkey);
+              const decrypted = nip44.decrypt(ev.content, key);
+              setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
+          } catch(e) {
+              console.error(e);
+              alert("Decryption failed. Key incorrect or invalid format.");
+          }
+      } else if (window.nostr && window.nostr.nip44) {
+          // NIP-07 Login - Extension Decrypt
+          try {
+              const decrypted = await window.nostr.nip44.decrypt(ev.pubkey, ev.content);
+              setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
+          } catch(e) {
+              console.error(e);
+              alert("Extension decryption failed. Rejected or invalid.");
+          }
+      } else {
+          alert("Please login with a private key (nsec) or NIP-07 extension supporting NIP-44 to decrypt.");
       }
   };
 
