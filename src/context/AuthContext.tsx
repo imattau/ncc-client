@@ -22,6 +22,7 @@ interface AuthContextType extends AuthState {
   loginReadOnly: (npub: string) => void;
   loginWithNip46: (signerPubkey: string, relay: string, clientSecret: string) => void;
   signEvent: (event: any) => Promise<any>;
+  encryptNip44: (recipientPubkey: string, plaintext: string) => Promise<string>;
   decryptNip44: (senderPubkey: string, ciphertext: string) => Promise<string>;
   logout: () => void;
 }
@@ -170,6 +171,59 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       throw new Error("No signing method available");
   };
 
+  const encryptNip44 = async (recipientPubkey: string, plaintext: string) => {
+      if (state.method === 'nsec' && state.privkey) {
+          const key = nip44.getConversationKey(hexToBytes(state.privkey), recipientPubkey);
+          return nip44.encrypt(plaintext, key);
+      }
+      if (state.method === 'nip07' && window.nostr?.nip44) {
+          return window.nostr.nip44.encrypt(recipientPubkey, plaintext);
+      }
+      if (state.method === 'nip46' && state.bunkerPubkey && state.bunkerRelay && state.clientSecretKey) {
+          const secret = hexToBytes(state.clientSecretKey);
+          const requestId = Math.random().toString(36).substring(7);
+          const request = {
+              id: requestId,
+              method: 'nip44_encrypt',
+              params: [recipientPubkey, plaintext]
+          };
+
+          const conversationKey = nip44.getConversationKey(secret, state.bunkerPubkey);
+          const encrypted = nip44.encrypt(JSON.stringify(request), conversationKey);
+
+          const reqEvent = finalizeEvent({
+              kind: 24133,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [['p', state.bunkerPubkey]],
+              content: encrypted
+          }, secret);
+
+          await pool.publish([state.bunkerRelay], reqEvent);
+
+          return new Promise<string>((resolve, reject) => {
+              const sub = pool.subscribeMany(
+                  [state.bunkerRelay!],
+                  [{ kinds: [24133], '#p': [getPublicKey(secret)], authors: [state.bunkerPubkey!] }] as any,
+                  {
+                      onevent(ev) {
+                          try {
+                              const dec = nip44.decrypt(ev.content, conversationKey);
+                              const resp = JSON.parse(dec);
+                              if (resp.id === requestId) {
+                                  sub.close();
+                                  if (resp.result) resolve(resp.result);
+                                  else reject(new Error(resp.error || "Remote encryption failed"));
+                              }
+                          } catch (e) {}
+                      }
+                  }
+              );
+              setTimeout(() => { sub.close(); reject(new Error("Remote encryption timed out")); }, 30000);
+          });
+      }
+      throw new Error("No encryption method available");
+  };
+
   const decryptNip44 = async (senderPubkey: string, ciphertext: string) => {
       if (state.method === 'nsec' && state.privkey) {
           const key = nip44.getConversationKey(hexToBytes(state.privkey), senderPubkey);
@@ -251,7 +305,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ ...state, loginWithNip07, loginWithNsec, loginReadOnly, loginWithNip46, signEvent, decryptNip44, logout }}>
+    <AuthContext.Provider value={{ ...state, loginWithNip07, loginWithNsec, loginReadOnly, loginWithNip46, signEvent, encryptNip44, decryptNip44, logout }}>
       {children}
     </AuthContext.Provider>
   );

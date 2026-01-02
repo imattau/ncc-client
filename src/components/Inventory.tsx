@@ -3,7 +3,8 @@ import { useAuth } from '../context/AuthContext';
 import { useNCC } from '../context/NCCContext';
 import { RelayManager } from '../lib/relays';
 import { nip19, getPublicKey } from 'nostr-tools';
-import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2 } from 'lucide-react';
+import { Package, Plus, RefreshCw, Key, ShieldCheck, Trash2, Lock } from 'lucide-react';
+import { encryptPrivateRecipients, NCC02Builder, parsePrivateFlag } from 'ncc-02-js';
 import clsx from 'clsx';
 
 interface ManagedIdentity {
@@ -24,7 +25,7 @@ const escapeHtml = (str: string) => {
 };
 
 export function Inventory() {
-    const { pubkey: currentPubkey, method, signEvent } = useAuth();
+    const { pubkey: currentPubkey, method, signEvent, encryptNip44 } = useAuth();
     const { pool } = useNCC();
     
     const [identities, setIdentities] = useState<ManagedIdentity[]>(() => {
@@ -39,6 +40,15 @@ export function Inventory() {
 
     const [editingRecord, setEditingRecord] = useState<any>(null);
     const [editContent, setEditContent] = useState('');
+
+    const [showCreateService, setShowCreateService] = useState(false);
+    const [serviceForm, setServiceForm] = useState({
+        ownerPubkey: '',
+        serviceId: 'relay',
+        endpoint: '',
+        isPrivate: false,
+        recipients: ''
+    });
 
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
     const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -129,6 +139,54 @@ export function Inventory() {
         setIdentities(identities.filter(i => i.pubkey !== pk));
     };
 
+    const handleCreateService = async () => {
+        const iden = identities.find(i => i.pubkey === serviceForm.ownerPubkey) || 
+                     (serviceForm.ownerPubkey === currentPubkey ? { pubkey: currentPubkey, privkey: undefined } : null);
+        
+        if (!iden) return alert("Select a managed identity first.");
+        
+        setLoading(true);
+        try {
+            const builder = new NCC02Builder(iden.privkey || (({
+                getPublicKey: () => Promise.resolve(iden.pubkey),
+                signEvent: (ev: any) => signEvent(ev)
+            }) as any));
+
+            let encryptedRecipients: string[] | undefined;
+            if (serviceForm.isPrivate && serviceForm.recipients) {
+                const recipientList = serviceForm.recipients.split(',')
+                    .map(r => r.trim())
+                    .filter(r => r)
+                    .map(r => r.startsWith('npub') ? (nip19.decode(r).data as string) : r);
+                
+                if (recipientList.length > 0) {
+                    const signer = iden.privkey || ({
+                        nip44Encrypt: (p: string, t: string) => encryptNip44(p, t),
+                        getPublicKey: () => Promise.resolve(iden.pubkey)
+                    });
+                    encryptedRecipients = await encryptPrivateRecipients(signer as any, recipientList);
+                }
+            }
+
+            const record = await builder.createServiceRecord({
+                serviceId: serviceForm.serviceId,
+                endpoint: serviceForm.endpoint || undefined,
+                expiryDays: 30,
+                isPrivate: serviceForm.isPrivate,
+                privateRecipients: encryptedRecipients
+            });
+
+            await pool.publish(RelayManager.load(), record);
+            alert("NCC-02 Service Record Published!");
+            setShowCreateService(false);
+            scanRecords();
+        } catch (e: any) {
+            alert("Publish failed: " + e.message);
+        } finally {
+            setLoading(false);
+        }
+    };
+
     const handleRenew = async (rec: any) => {
         const iden = identities.find(i => i.pubkey === rec.pubkey);
         const auxiliaryNsec = iden?.privkey;
@@ -149,6 +207,14 @@ export function Inventory() {
             if (expIdx !== -1) {
                 const newExp = now + (30 * 24 * 60 * 60); // +30 days
                 newEvent.tags[expIdx] = ['exp', newExp.toString()];
+            }
+
+            // Ensure 'private' tag is present (defaulting to false if missing for new protocol compliance)
+            const privTagIdx = newEvent.tags.findIndex((t: any) => t[0] === 'private');
+            if (privTagIdx === -1) {
+                // If it was missing but has 'u' tag, it's public. If no 'u' tag, it's private.
+                const isPub = newEvent.tags.some((t: any) => t[0] === 'u');
+                newEvent.tags.push(['private', isPub ? 'false' : 'true']);
             }
 
             let signed;
@@ -215,11 +281,84 @@ export function Inventory() {
                     <button className={clsx("btn btn-sm", loading && "loading")} onClick={scanRecords}>
                         <RefreshCw className="w-4 h-4" /> Scan Network
                     </button>
+                    <button className="btn btn-sm btn-secondary" onClick={() => setShowCreateService(!showCreateService)}>
+                        <ShieldCheck className="w-4 h-4" /> Publish NCC-02
+                    </button>
                     <button className="btn btn-sm btn-primary" onClick={() => setShowAdd(!showAdd)}>
                         <Plus className="w-4 h-4" /> Add Identity
                     </button>
                 </div>
             </div>
+
+            {/* Create Service Form */}
+            {showCreateService && (
+                <div className="card bg-base-100 shadow-lg border border-secondary/20">
+                    <div className="card-body p-4">
+                        <h3 className="font-bold text-sm mb-3">Publish NCC-02 Service Record</h3>
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                            <div className="form-control">
+                                <label className="label text-[10px] font-bold uppercase opacity-50">Identity</label>
+                                <select 
+                                    className="select select-bordered select-sm"
+                                    value={serviceForm.ownerPubkey}
+                                    onChange={e => setServiceForm({...serviceForm, ownerPubkey: e.target.value})}
+                                >
+                                    <option value="">Select Managed Identity...</option>
+                                    {allManagedPubkeys.map(pk => (
+                                        <option key={pk} value={pk}>
+                                            {identities.find(i => i.pubkey === pk)?.label || (pk === currentPubkey ? "Primary Account" : pk.slice(0,12))}
+                                        </option>
+                                    ))}
+                                </select>
+                            </div>
+                            <div className="form-control">
+                                <label className="label text-[10px] font-bold uppercase opacity-50">Service ID</label>
+                                <input 
+                                    className="input input-bordered input-sm" 
+                                    placeholder="e.g. relay, media, api"
+                                    value={serviceForm.serviceId}
+                                    onChange={e => setServiceForm({...serviceForm, serviceId: e.target.value})}
+                                />
+                            </div>
+                            <div className="form-control sm:col-span-2">
+                                <label className="label text-[10px] font-bold uppercase opacity-50">Endpoint URL (Optional)</label>
+                                <input 
+                                    className="input input-bordered input-sm font-mono" 
+                                    placeholder="wss://... or https://..."
+                                    value={serviceForm.endpoint}
+                                    onChange={e => setServiceForm({...serviceForm, endpoint: e.target.value})}
+                                />
+                            </div>
+                            <div className="form-control sm:col-span-2">
+                                <label className="label cursor-pointer justify-start gap-4">
+                                    <input 
+                                        type="checkbox" 
+                                        className="toggle toggle-secondary toggle-sm" 
+                                        checked={serviceForm.isPrivate} 
+                                        onChange={e => setServiceForm({...serviceForm, isPrivate: e.target.checked})} 
+                                    />
+                                    <span className="label-text font-bold text-xs">Private Service (Requires 'private' tag)</span>
+                                </label>
+                            </div>
+                            {serviceForm.isPrivate && (
+                                <div className="form-control sm:col-span-2 fade-in">
+                                    <label className="label text-[10px] font-bold uppercase opacity-50">Authorized Recipients (npubs, comma separated)</label>
+                                    <textarea 
+                                        className="textarea textarea-bordered h-20 text-xs font-mono"
+                                        placeholder="npub1..., npub1..."
+                                        value={serviceForm.recipients}
+                                        onChange={e => setServiceForm({...serviceForm, recipients: e.target.value})}
+                                    />
+                                </div>
+                            )}
+                        </div>
+                        <div className="card-actions justify-end mt-4">
+                            <button className="btn btn-sm btn-ghost" onClick={() => setShowCreateService(false)}>Cancel</button>
+                            <button className={clsx("btn btn-sm btn-secondary", loading && "loading")} onClick={handleCreateService} disabled={!serviceForm.ownerPubkey}>Publish Record</button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Add Identity Form */}
             {showAdd && (
@@ -299,6 +438,7 @@ export function Inventory() {
                         const label = iden ? iden.label : "Primary";
                         const d = rec.tags.find((t: any) => t[0] === 'd')?.[1] || 'none';
                         const isExpired = rec.kind === 30059 && rec.tags.find((t: any) => t[0] === 'exp' && parseInt(t[1]) < Date.now() / 1000);
+                        const isPrivate = rec.kind === 30059 && parsePrivateFlag(rec.tags);
 
                         return (
                             <div key={rec.id} className={clsx("card bg-base-100 border shadow-sm", isExpired ? "border-error/30" : "border-base-200")}>
@@ -308,6 +448,7 @@ export function Inventory() {
                                             <div className="flex items-center gap-2">
                                                 <span className="badge badge-neutral badge-xs font-bold" dangerouslySetInnerHTML={{ __html: escapeHtml(label) }}></span>
                                                 <span className="text-sm font-black uppercase">Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(d) }}></span></span>
+                                                {isPrivate && <Lock className="w-3 h-3 text-warning" />}
                                                 {isExpired && <div className="badge badge-error badge-xs">EXPIRED</div>}
                                             </div>
                                             <div className="flex items-center gap-2">

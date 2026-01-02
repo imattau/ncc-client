@@ -7,6 +7,7 @@ import { nip19, nip44 } from 'nostr-tools';
 import { Network, ShieldCheck, AlertTriangle, Lock, BadgeCheck } from 'lucide-react';
 import { RelayManager } from '../lib/relays';
 import clsx from 'clsx';
+import { parsePrivateFlag, collectPrivateRecipients, isPrivateRecipientAuthorized } from 'ncc-02-js';
 
 import { useWoT } from '../context/WoTContext';
 
@@ -47,6 +48,23 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
   const [probing, setProbing] = useState<Record<string, number | 'error' | 'loading'>>({});
   const [wotOnly, setWotOnly] = useState(false);
+  const [authorizedEvents, setAuthorizedEvents] = useState<Record<string, boolean>>({});
+
+  // Pre-calculate authorization for private events
+  useEffect(() => {
+      const checkAuth = async () => {
+          const results: Record<string, boolean> = {};
+          for (const ev of rawEvents) {
+              if (ev.kind === 30058 || ev.kind === 30059) {
+                  results[ev.id] = await isTargetedToMe(ev);
+              }
+          }
+          setAuthorizedEvents(results);
+      };
+      if (rawEvents.length > 0 && myPubkey) {
+          checkAuth();
+      }
+  }, [rawEvents, myPubkey, decryptedPayloads]);
 
   // Background Scanner: Find attestations in the existing record cache
   useEffect(() => {
@@ -149,30 +167,45 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       } catch (e) { return pubkey.slice(0, 8); }
   };
   
-  const isTargetedToMe = (locEvent: any) => {
+  const isTargetedToMe = async (event: any) => {
       if (!myPubkey) return false;
       
-      // 1. Check if I am a recipient in the decrypted payload (if already decrypted)
-      const dec = decryptedPayloads[locEvent.id];
-      if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
+      if (event.kind === 30058) {
+          // 1. Check if I am a recipient in the decrypted payload (if already decrypted)
+          const dec = decryptedPayloads[event.id];
+          if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
 
-      // 2. Check if I am in the author's Profile Whitelist (PoC Convention)
-      const profile = profiles[locEvent.pubkey];
-      if (profile && profile._tags) {
-          const whitelist = profile._tags.find((t: any) => t[0] === 'privaterecipients')?.slice(1) || [];
-          if (whitelist.includes(myPubkey)) return true;
+          // 2. Check if I am in the author's Profile Whitelist (PoC Convention)
+          const profile = profiles[event.pubkey];
+          if (profile && profile._tags) {
+              const whitelist = profile._tags.find((t: any) => t[0] === 'privaterecipients')?.slice(1) || [];
+              if (whitelist.includes(myPubkey)) return true;
+          }
+
+          // 3. Check if I am a recipient in the raw content (if it's a public record with a private list)
+          if (event.content.startsWith('{')) {
+              try {
+                  const data = JSON.parse(event.content);
+                  if (data.privaterecipients?.includes(myPubkey)) return true;
+              } catch(e) {}
+          }
       }
 
-      // 3. Check if I am a recipient in the raw content (if it's a public record with a private list)
-      if (locEvent.content.startsWith('{')) {
-          try {
-              const data = JSON.parse(locEvent.content);
-              if (data.privaterecipients?.includes(myPubkey)) return true;
-          } catch(e) {}
+      if (event.kind === 30059) {
+          const privateRecipients = collectPrivateRecipients(event.tags);
+          if (privateRecipients.length > 0) {
+              const signer = {
+                  nip44Decrypt: (ownerPubkey: string, ciphertext: string) => decryptNip44(ownerPubkey, ciphertext),
+                  getPublicKey: () => Promise.resolve(myPubkey)
+              };
+              try {
+                  return await isPrivateRecipientAuthorized(privateRecipients, event.pubkey, signer as any);
+              } catch(e) { return false; }
+          }
       }
 
       // 4. Check if I am mentioned in the 'p' tags of the event (Standard Nostr targeted event)
-      return locEvent.tags.some((t: any) => t[0] === 'p' && t[1] === myPubkey);
+      return event.tags.some((t: any) => t[0] === 'p' && t[1] === myPubkey);
   };
 
   const handleDecryptClick = async (ev: any) => {
@@ -464,7 +497,8 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                   <div className="space-y-4">
                                       {activeKeys.map(baseId => {
                                           const t = threads[baseId];
-                                          const isPrivate = t.service && !t.service.tags.find((tag: any) => tag[0] === 'u');
+                                          const isPrivate = t.service && (parsePrivateFlag(t.service.tags) ?? !t.service.tags.find((tag: any) => tag[0] === 'u'));
+                                          const isAuthorized = t.service && authorizedEvents[t.service.id];
                                           const sExpired = t.service && isExpired(t.service);
                                           const isRevoked = t.revocations.length > 0;
                                           const tracked = isTracked(pubkey, baseId);
@@ -521,7 +555,11 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                           {t.service ? (
                                                               <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box shadow-xs">
                                                                   <input type="checkbox" /> 
-                                                                  <div className="collapse-title text-[10px] font-bold py-1 min-h-0 flex items-center gap-2">NCC-02 Record {isPrivate && <Lock className="w-3 h-3 text-warning" />}</div>
+                                                                  <div className="collapse-title text-[10px] font-bold py-1 min-h-0 flex items-center gap-2">
+                                                                      NCC-02 Record 
+                                                                      {isPrivate && <Lock className={clsx("w-3 h-3", isAuthorized ? "text-success" : "text-warning")} />}
+                                                                      {isPrivate && isAuthorized && <span className="text-[8px] text-success uppercase">Authorized</span>}
+                                                                  </div>
                                                                   <div className="collapse-content"><pre className="text-[9px] bg-black text-green-500 p-2 rounded mt-1 overflow-x-auto">{JSON.stringify(t.service, null, 2)}</pre></div>
                                                               </div>
                                                           ) : <div className="text-[9px] opacity-50 px-2 italic">No NCC-02</div>}
@@ -544,7 +582,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                               </div>
                                                           ))}
                                                           {t.locators.map(loc => {
-                                                              const targeted = isTargetedToMe(loc);
+                                                              const targeted = authorizedEvents[loc.id];
                                                               const isEnc = !loc.content.trim().startsWith('{');
                                                               const dec = decryptedPayloads[loc.id];
                                                               const lExp = isExpired(loc);
