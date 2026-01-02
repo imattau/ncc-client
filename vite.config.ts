@@ -23,5 +23,13 @@ export default defineConfig({
   },
   server: {
     host: true,
+    allowedHosts: true,
+    proxy: {
+      '/bridge': {
+        target: 'ws://localhost:3001',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/bridge/, ''),
+      },
+    },
   },
 })

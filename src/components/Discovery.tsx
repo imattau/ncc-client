@@ -189,7 +189,8 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     if (url.includes('.onion')) {
         const choice = window.confirm(`🧅 Tor Onion Address Detected\n\n1. OK: Use Bridge (requires npm run bridge)\n2. Cancel: Direct (Tor Browser/Orbot)`);
         if (choice) {
-            const bridgeUrl = `ws://${window.location.hostname}:3001?target=${encodeURIComponent(url)}`;
+            // Use Vite Proxy path /bridge
+            const bridgeUrl = `ws://${window.location.host}/bridge?target=${encodeURIComponent(url)}`;
             onConnect(bridgeUrl);
             return;
         } else {

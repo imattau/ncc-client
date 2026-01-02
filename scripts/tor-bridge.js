@@ -39,13 +39,21 @@ wss.on('connection', (clientWs, req, targetUrl) => {
   let remoteOpen = false;
   const messageBuffer = [];
 
+  const parsedTarget = new URL(targetUrl);
   console.log(`[Bridge] [${new Date().toLocaleTimeString()}] Tunneling: Client -> ${targetUrl}`);
 
   // Connect to the Onion Relay via SOCKS Agent
   const remoteWs = new WebSocket(targetUrl, { 
       agent,
-      handshakeTimeout: 45000 // 45s for very slow Tor circuits
+      handshakeTimeout: 60000, 
+      headers: {
+          'Host': parsedTarget.host,
+          'User-Agent': 'NCC-Tor-Bridge/1.0',
+          'Origin': 'http://' + parsedTarget.host // Match the host to satisfy origin checks
+      }
   });
+
+  console.log(`[Bridge] Handshake initiated...`);
 
   // Handle data from Onion Relay -> Browser
   remoteWs.on('message', (data, isBinary) => {
