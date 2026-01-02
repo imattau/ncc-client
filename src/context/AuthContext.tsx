@@ -56,20 +56,38 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const loginWithNsec = (nsecOrHex: string) => {
     try {
       let hex = nsecOrHex;
+      let bytes: Uint8Array;
+
+      // Helper to convert hex string to Uint8Array
+      const hexToBytes = (hexString: string) => 
+        Uint8Array.from(hexString.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+
+      // Helper to convert Uint8Array to hex string
+      const bytesToHex = (uint8: Uint8Array) =>
+        Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
+
       if (nsecOrHex.startsWith('nsec')) {
         const { data } = nip19.decode(nsecOrHex);
-        hex = data as string;
+        // data is Uint8Array in modern nostr-tools
+        if (data instanceof Uint8Array) {
+            bytes = data;
+            hex = bytesToHex(data);
+        } else {
+            // fallback for older versions or if it returns string
+            hex = data as string;
+            bytes = hexToBytes(hex);
+        }
+      } else {
+        // Assume raw hex input
+        bytes = hexToBytes(hex);
       }
       
-      // Simple hexToBytes helper
-      const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
-      
-      const pubkey = getPublicKey(hexToBytes(hex));
+      const pubkey = getPublicKey(bytes);
       setState({ pubkey, privkey: hex, method: 'nsec', isLoading: false });
       persist('nsec', pubkey, hex);
     } catch (e) {
       console.error(e);
-      alert('Invalid Private Key');
+      alert('Invalid Private Key: ' + (e as Error).message);
     }
   };
 
