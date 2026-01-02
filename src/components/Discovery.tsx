@@ -288,156 +288,158 @@ export function Discovery({ onConnect }: DiscoveryProps) {
            ))}
         </div>
 
-        {/* Threaded Events View */}
+        {/* Threaded Events View - Grouped by Publisher */}
         {rawEvents.length > 0 && (
-           <div className="mt-4">
+           <div className="mt-4 space-y-6">
               <h4 className="text-sm font-bold mb-2">Found Services ({rawEvents.length} events)</h4>
               
               {(() => {
-                  // 1. Grouping Logic
-                  const threads: Record<string, { service?: any, locators: any[] }> = {};
-
-                  // Helper to get unique key
-                  const getKey = (ev: any) => `${ev.pubkey}:${ev.tags.find((t: any) => t[0] === 'd')?.[1]}`;
-
-                  // First pass: Index Services (30059)
-                  rawEvents.filter(e => e.kind === 30059).forEach(ev => {
-                      const key = getKey(ev);
-                      if (!threads[key]) threads[key] = { locators: [] };
-                      threads[key].service = ev;
+                  // 1. Group by Publisher
+                  const byPublisher: Record<string, any[]> = {};
+                  rawEvents.forEach(ev => {
+                      if (!byPublisher[ev.pubkey]) byPublisher[ev.pubkey] = [];
+                      byPublisher[ev.pubkey].push(ev);
                   });
 
-                  // Second pass: Attach Locators (30058) or mark orphan
-                  rawEvents.filter(e => e.kind === 30058).forEach(ev => {
-                      const key = getKey(ev);
-                      if (threads[key]) {
-                          threads[key].locators.push(ev);
-                      } else {
-                          // Orphan locator (no service record found)
-                          // We create a thread anyway to show it, but it won't have a service definition
+                  return Object.entries(byPublisher).map(([pubkey, events]) => {
+                      const displayName = getDisplayName(pubkey);
+                      const npub = nip19.npubEncode(pubkey);
+
+                      // 2. Group by Service (d-tag) within Publisher
+                      const threads: Record<string, { service?: any, locators: any[] }> = {};
+                      const getKey = (ev: any) => ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'unknown';
+
+                      events.forEach(ev => {
+                          const key = getKey(ev);
                           if (!threads[key]) threads[key] = { locators: [] };
-                          threads[key].locators.push(ev);
-                      }
-                  });
+                          
+                          if (ev.kind === 30059) {
+                              threads[key].service = ev;
+                          } else if (ev.kind === 30058) {
+                              threads[key].locators.push(ev);
+                          }
+                      });
 
-                  return (
-                    <div className="space-y-4">
-                        {Object.values(threads).map((thread, i) => {
-                            const root = thread.service || thread.locators[0]; // Use service or first locator for header info
-                            const dTag = root.tags.find((t: any) => t[0] === 'd')?.[1] || 'none';
-                            const pubkey = root.pubkey;
-                            const displayName = getDisplayName(pubkey);
+                      return (
+                          <div key={pubkey} className="card bg-base-100 shadow-md border border-base-300">
+                              <div className="card-body p-4">
+                                  {/* Publisher Header */}
+                                  <div className="flex items-center gap-3 mb-4 pb-2 border-b border-base-200">
+                                      <div className="avatar placeholder">
+                                          <div className="bg-neutral text-neutral-content rounded-full w-10">
+                                              <span className="text-xs">{displayName.slice(0, 2).toUpperCase()}</span>
+                                          </div>
+                                      </div>
+                                      <div>
+                                          <div className="font-bold text-lg">{displayName}</div>
+                                          <div className="text-xs font-mono opacity-50">{npub.slice(0, 12)}...{npub.slice(-6)}</div>
+                                      </div>
+                                  </div>
 
-                            // Private Service Detection: No 'u' (endpoint) tag in 30059
-                            const isPrivateService = thread.service && !thread.service.tags.find((t: any) => t[0] === 'u');
-
-                            return (
-                                <div key={i} className="border border-base-300 bg-base-100 rounded-box overflow-hidden">
-                                    {/* Thread Header */}
-                                    <div className="p-3 bg-base-200 flex items-center justify-between">
-                                        <div className="flex items-center gap-2">
-                                            <div className={`badge ${thread.service ? 'badge-secondary' : 'badge-ghost'} badge-sm`}>
-                                                {thread.service ? (isPrivateService ? 'Private Service' : 'Service Defined') : 'Locator Only'}
-                                            </div>
-                                            <span className="font-bold text-sm">{dTag}</span>
-                                        </div>
-                                        <span className="text-xs opacity-50 font-mono truncate max-w-[120px]">{displayName}</span>
-                                    </div>
-
-                                    {/* Thread Body */}
-                                    <div className="p-2 space-y-2">
-                                        
-                                        {/* 1. The Service Record (Parent) */}
-                                        {thread.service && (
-                                            <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
-                                                <input type="checkbox" /> 
-                                                <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
-                                                    📄 Policy / Definition (NCC-02)
-                                                    {isPrivateService && <Lock className="w-3 h-3 text-warning" />}
-                                                </div>
-                                                <div className="collapse-content"> 
-                                                    <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                        {JSON.stringify(thread.service, null, 2)}
-                                                    </pre>
-                                                </div>
-                                            </div>
-                                        )}
-
-                                        {/* 2. The Locators (Children) */}
-                                        {thread.locators.map((loc) => {
-                                            // Check publisher's Kind 0 for 'privaterecipients'
-                                            const targeted = isTargetedToMe(loc.pubkey);
-                                            // Check if content looks encrypted (no starting brace)
-                                            const isEncrypted = !loc.content.trim().startsWith('{');
-                                            const decrypted = decryptedPayloads[loc.id];
-
-                                            return (
-                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : 'border-primary'} pl-2`}>
-                                                  <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
-                                                      <input type="checkbox" /> 
-                                                      <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
-                                                          <span>📍 Endpoint (NCC-05)</span>
-                                                          <span className="opacity-50 text-[10px]">
-                                                              {new Date(loc.created_at * 1000).toLocaleTimeString()}
-                                                          </span>
-                                                          {targeted && (
-                                                              <div className="badge badge-success badge-xs gap-1">
-                                                                  <User className="w-2 h-2" />
-                                                                  For You
-                                                              </div>
-                                                          )}
-                                                          {isEncrypted && !decrypted && (
-                                                              <div className="badge badge-warning badge-xs gap-1">
-                                                                  <Lock className="w-2 h-2" />
-                                                                  Encrypted
-                                                              </div>
-                                                          )}
-                                                          {decrypted && (
-                                                              <div className="badge badge-info badge-xs gap-1">
-                                                                  <Unlock className="w-2 h-2" />
-                                                                  Decrypted
-                                                              </div>
-                                                          )}
-                                                      </div>
-                                                      <div className="collapse-content"> 
-                                                          {isEncrypted && !decrypted ? (
-                                                              <div className="flex flex-col gap-2 p-2">
-                                                                  <div className="alert alert-warning text-xs p-2">
-                                                                      <Lock className="w-4 h-4" />
-                                                                      <span>Content is encrypted.</span>
-                                                                  </div>
-                                                                  <button 
-                                                                    className="btn btn-xs btn-neutral"
-                                                                    onClick={(e) => { e.stopPropagation(); handleDecryptClick(loc); }}
-                                                                  >
-                                                                     Attempt Decrypt
-                                                                  </button>
-                                                                  <div className="text-[10px] opacity-50 break-all font-mono">
-                                                                      {loc.content.slice(0, 50)}...
-                                                                  </div>
-                                                              </div>
-                                                          ) : (
-                                                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                                  {JSON.stringify(decrypted || loc, null, 2)}
-                                                              </pre>
-                                                          )}
+                                  {/* Services List */}
+                                  <div className="space-y-4">
+                                      {Object.entries(threads).map(([dTag, thread], i) => {
+                                          const isPrivateService = thread.service && !thread.service.tags.find((t: any) => t[0] === 'u');
+                                          
+                                          return (
+                                              <div key={i} className="border border-base-200 bg-base-100 rounded-box overflow-hidden">
+                                                  {/* Service Header */}
+                                                  <div className="p-2 bg-base-200 flex items-center justify-between">
+                                                      <div className="flex items-center gap-2">
+                                                          <div className={`badge ${thread.service ? 'badge-secondary' : 'badge-ghost'} badge-sm`}>
+                                                              {thread.service ? (isPrivateService ? 'Private Service' : 'Service Defined') : 'Locator Only'}
+                                                          </div>
+                                                          <span className="font-bold text-sm">{dTag}</span>
                                                       </div>
                                                   </div>
-                                              </div>
-                                            );
-                                        })}
 
-                                        {thread.locators.length === 0 && (
-                                            <div className="text-xs opacity-50 italic ml-4 p-2">
-                                                No location endpoints published yet.
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
-                            );
-                        })}
-                    </div>
-                  );
+                                                  {/* Service Body */}
+                                                  <div className="p-2 space-y-2">
+                                                      {/* NCC-02 Record */}
+                                                      {thread.service && (
+                                                          <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                              <input type="checkbox" /> 
+                                                              <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
+                                                                  📄 Policy (NCC-02)
+                                                                  {isPrivateService && <Lock className="w-3 h-3 text-warning" />}
+                                                              </div>
+                                                              <div className="collapse-content"> 
+                                                                  <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                                      {JSON.stringify(thread.service, null, 2)}
+                                                                  </pre>
+                                                              </div>
+                                                          </div>
+                                                      )}
+
+                                                      {/* NCC-05 Locators */}
+                                                      {thread.locators.map((loc) => {
+                                                          const targeted = isTargetedToMe(loc.pubkey);
+                                                          const isEncrypted = !loc.content.trim().startsWith('{');
+                                                          const decrypted = decryptedPayloads[loc.id];
+
+                                                          return (
+                                                              <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : 'border-primary'} pl-2`}>
+                                                                  <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                                      <input type="checkbox" /> 
+                                                                      <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2 flex-wrap">
+                                                                          <span>📍 Endpoint (NCC-05)</span>
+                                                                          <span className="opacity-50 text-[10px]">
+                                                                              {new Date(loc.created_at * 1000).toLocaleTimeString()}
+                                                                          </span>
+                                                                          {targeted && (
+                                                                              <div className="badge badge-success badge-xs gap-1">
+                                                                                  <User className="w-2 h-2" />
+                                                                                  For You
+                                                                              </div>
+                                                                          )}
+                                                                          {isEncrypted && !decrypted && (
+                                                                              <div className="badge badge-warning badge-xs gap-1">
+                                                                                  <Lock className="w-2 h-2" />
+                                                                                  Encrypted
+                                                                              </div>
+                                                                          )}
+                                                                          {decrypted && (
+                                                                              <div className="badge badge-info badge-xs gap-1">
+                                                                                  <Unlock className="w-2 h-2" />
+                                                                                  Decrypted
+                                                                              </div>
+                                                                          )}
+                                                                      </div>
+                                                                      <div className="collapse-content"> 
+                                                                          {isEncrypted && !decrypted ? (
+                                                                              <div className="flex flex-col gap-2 p-2">
+                                                                                  <button 
+                                                                                    className="btn btn-xs btn-neutral"
+                                                                                    onClick={(e) => { e.stopPropagation(); handleDecryptClick(loc); }}
+                                                                                  >
+                                                                                     Attempt Decrypt
+                                                                                  </button>
+                                                                              </div>
+                                                                          ) : (
+                                                                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                                                  {JSON.stringify(decrypted || loc, null, 2)}
+                                                                              </pre>
+                                                                          )}
+                                                                      </div>
+                                                                  </div>
+                                                              </div>
+                                                          );
+                                                      })}
+
+                                                      {thread.locators.length === 0 && (
+                                                          <div className="text-xs opacity-50 italic ml-4 p-2">
+                                                              No locators found.
+                                                          </div>
+                                                      )}
+                                                  </div>
+                                              </div>
+                                          );
+                                      })}
+                                  </div>
+                              </div>
+                          </div>
+                      );
+                  });
               })()}
            </div>
         )}
