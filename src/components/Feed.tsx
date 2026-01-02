@@ -32,10 +32,10 @@ export function Feed({ relayUrl }: FeedProps) {
     if (!relayUrl) return;
 
     // Browser Safety Check for Onion Addresses
+    // We allow the attempt because the user might be using Orbot/Tor Browser.
+    // If it fails, the standard error handler will catch it.
     if (relayUrl.includes('.onion')) {
-        setStatus('error');
-        setErrorMsg("Browsers cannot connect to .onion Relays directly. Use a Tor-enabled native app.");
-        return;
+        console.warn("[Feed] Attempting connection to .onion address. This requires a Tor-enabled browser or system proxy.");
     }
 
     setStatus('connecting');
