@@ -48,6 +48,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
 
   const [probing, setProbing] = useState<Record<string, number | 'error' | 'loading'>>({});
   const [wotOnly, setWotOnly] = useState(false);
+  const [targetedOnly, setTargetedOnly] = useState(false);
   const [authorizedEvents, setAuthorizedEvents] = useState<Record<string, boolean>>({});
 
   // Pre-calculate authorization for private events
@@ -175,14 +176,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           const dec = decryptedPayloads[event.id];
           if (dec && dec.privaterecipients?.includes(myPubkey)) return true;
 
-          // 2. Check if I am in the author's Profile Whitelist (PoC Convention)
-          const profile = profiles[event.pubkey];
-          if (profile && profile._tags) {
-              const whitelist = profile._tags.find((t: any) => t[0] === 'privaterecipients')?.slice(1) || [];
-              if (whitelist.includes(myPubkey)) return true;
-          }
-
-          // 3. Check if I am a recipient in the raw content (if it's a public record with a private list)
+          // 2. Check if I am a recipient in the raw content (if it's a public record with a private list)
           if (event.content.startsWith('{')) {
               try {
                   const data = JSON.parse(event.content);
@@ -404,6 +398,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                <input type="checkbox" className="toggle toggle-sm toggle-secondary" checked={wotOnly} onChange={e => setWotOnly(e.target.checked)} />
              </label>
           </div>
+          <div className="form-control">
+             <label className="cursor-pointer label justify-start gap-4">
+               <span className="label-text text-sm font-bold text-success">Targeted to Me</span> 
+               <input type="checkbox" className="toggle toggle-sm toggle-success" checked={targetedOnly} onChange={e => setTargetedOnly(e.target.checked)} />
+             </label>
+          </div>
           <button className="btn btn-primary w-full" onClick={() => handleDiscover()} disabled={step === 'verifying' || step === 'resolving'}>
             {step !== 'idle' && step !== 'complete' && <span className="loading loading-spinner"></span>}
             Run Discovery
@@ -459,6 +459,12 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                           const t = threads[k];
                           const passesExpiry = showExpired || (t.service && !isExpired(t.service)) || t.locators.some(l => !isExpired(l));
                           if (!passesExpiry) return false;
+
+                          if (targetedOnly) {
+                              const isSrvTargeted = t.service && authorizedEvents[t.service.id];
+                              const isLocTargeted = t.locators.some(l => authorizedEvents[l.id]);
+                              if (!isSrvTargeted && !isLocTargeted) return false;
+                          }
 
                           if (wotOnly) {
                               // Is the author someone I follow?
