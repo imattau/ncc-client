@@ -21,6 +21,17 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: './src/tests/setup.ts',
   },
+  build: {
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          'vendor-react': ['react', 'react-dom', 'react-router-dom'],
+          'vendor-utils': ['clsx', 'tailwind-merge', 'lucide-react', 'qrcode.react'],
+          'vendor-nostr': ['nostr-tools', 'ncc-02-js', 'ncc-05-js'],
+        },
+      },
+    },
+  },
   server: {
     host: true,
     allowedHosts: true,
