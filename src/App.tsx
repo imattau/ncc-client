@@ -4,7 +4,6 @@ import { NCCProvider } from './context/NCCContext';
 import { Auth } from './components/Auth';
 import { Discovery } from './components/Discovery';
 import { Feed } from './components/Feed';
-import { ServicePublisher } from './components/ServicePublisher';
 import { TrustExplorer } from './components/TrustExplorer';
 import { Inventory } from './components/Inventory';
 import { Settings } from './components/Settings';
@@ -22,7 +21,7 @@ interface ActiveService {
 function Main() {
   const { pubkey, logout, method } = useAuth();
   const { tracked, findTracked } = useTracking();
-  const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'publish' | 'trust' | 'inventory' | 'settings'>('discovery');
+  const [activeTab, setActiveTab] = useState<'discovery' | 'feed' | 'trust' | 'inventory' | 'settings'>('discovery');
   const [activeRelay, setActiveRelay] = useState<string | null>(() => localStorage.getItem('ncc_active_relay'));
   const [currentService, setCurrentService] = useState<ActiveService | null>(() => {
       const saved = localStorage.getItem('ncc_active_service');
@@ -172,13 +171,6 @@ function Main() {
             Feed {activeRelay && '🟢'}
           </a>
           <a 
-            role="tab" 
-            className={clsx("tab", activeTab === 'publish' && "tab-active")}
-            onClick={() => setActiveTab('publish')}
-          >
-            Publish
-          </a>
-          <a 
              role="tab" 
              className={clsx("tab", activeTab === 'trust' && "tab-active")}
              onClick={() => setActiveTab('trust')}
@@ -205,11 +197,6 @@ function Main() {
         <div className="fade-in">
           {activeTab === 'discovery' && <Discovery onConnect={handleConnect} />}
           {activeTab === 'feed' && <Feed relayUrl={activeRelay} />}
-          {activeTab === 'publish' && (
-             method === 'readonly' 
-             ? <div className="alert">Read-only users cannot publish. Please login with NIP-07 or Private Key.</div>
-             : <ServicePublisher />
-          )}
           {activeTab === 'trust' && <TrustExplorer />}
           {activeTab === 'inventory' && <Inventory />}
           {activeTab === 'settings' && <Settings />}
