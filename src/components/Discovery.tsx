@@ -242,56 +242,109 @@ export function Discovery({ onConnect }: DiscoveryProps) {
            ))}
         </div>
 
-        {/* Raw Events (Dev) */}
+        {/* Threaded Events View */}
         {rawEvents.length > 0 && (
            <div className="mt-4">
-              <h4 className="text-sm font-bold mb-2">Found Events ({rawEvents.length})</h4>
+              <h4 className="text-sm font-bold mb-2">Found Services ({rawEvents.length} events)</h4>
               
-              {/* NCC-02 Group */}
-              {rawEvents.filter(e => e.kind === 30059).length > 0 && (
-                <div className="mb-4">
-                  <h5 className="text-xs font-bold text-secondary mb-1">NCC-02 (Service Records - 30059)</h5>
-                  <div className="space-y-2">
-                    {rawEvents.filter(e => e.kind === 30059).map((ev) => (
-                        <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
-                          <input type="radio" name="events-accordion" /> 
-                          <div className="collapse-title text-xs font-mono flex items-center justify-between pr-8">
-                              <span>d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
-                              <span className="opacity-50 ml-2 truncate max-w-[150px]">{getDisplayName(ev.pubkey)}</span>
-                          </div>
-                          <div className="collapse-content"> 
-                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                {JSON.stringify(ev, null, 2)}
-                              </pre>
-                          </div>
-                        </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+              {(() => {
+                  // 1. Grouping Logic
+                  const threads: Record<string, { service?: any, locators: any[] }> = {};
 
-              {/* NCC-05 Group */}
-              {rawEvents.filter(e => e.kind === 30058).length > 0 && (
-                <div>
-                  <h5 className="text-xs font-bold text-primary mb-1">NCC-05 (Service Locators - 30058)</h5>
-                  <div className="space-y-2">
-                    {rawEvents.filter(e => e.kind === 30058).map((ev) => (
-                        <div key={ev.id} className="collapse collapse-arrow bg-base-200 border border-base-300">
-                          <input type="radio" name="events-accordion" /> 
-                          <div className="collapse-title text-xs font-mono flex items-center justify-between pr-8">
-                              <span>d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}</span>
-                              <span className="opacity-50 ml-2 truncate max-w-[150px]">{getDisplayName(ev.pubkey)}</span>
-                          </div>
-                          <div className="collapse-content"> 
-                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                {JSON.stringify(ev, null, 2)}
-                              </pre>
-                          </div>
-                        </div>
-                    ))}
-                  </div>
-                </div>
-              )}
+                  // Helper to get unique key
+                  const getKey = (ev: any) => `${ev.pubkey}:${ev.tags.find((t: any) => t[0] === 'd')?.[1]}`;
+
+                  // First pass: Index Services (30059)
+                  rawEvents.filter(e => e.kind === 30059).forEach(ev => {
+                      const key = getKey(ev);
+                      if (!threads[key]) threads[key] = { locators: [] };
+                      threads[key].service = ev;
+                  });
+
+                  // Second pass: Attach Locators (30058) or mark orphan
+                  rawEvents.filter(e => e.kind === 30058).forEach(ev => {
+                      const key = getKey(ev);
+                      if (threads[key]) {
+                          threads[key].locators.push(ev);
+                      } else {
+                          // Orphan locator (no service record found)
+                          // We create a thread anyway to show it, but it won't have a service definition
+                          if (!threads[key]) threads[key] = { locators: [] };
+                          threads[key].locators.push(ev);
+                      }
+                  });
+
+                  return (
+                    <div className="space-y-4">
+                        {Object.values(threads).map((thread, i) => {
+                            const root = thread.service || thread.locators[0]; // Use service or first locator for header info
+                            const dTag = root.tags.find((t: any) => t[0] === 'd')?.[1] || 'none';
+                            const pubkey = root.pubkey;
+                            const displayName = getDisplayName(pubkey);
+
+                            return (
+                                <div key={i} className="border border-base-300 bg-base-100 rounded-box overflow-hidden">
+                                    {/* Thread Header */}
+                                    <div className="p-3 bg-base-200 flex items-center justify-between">
+                                        <div className="flex items-center gap-2">
+                                            <div className={`badge ${thread.service ? 'badge-secondary' : 'badge-ghost'} badge-sm`}>
+                                                {thread.service ? 'Service Defined' : 'Locator Only'}
+                                            </div>
+                                            <span className="font-bold text-sm">{dTag}</span>
+                                        </div>
+                                        <span className="text-xs opacity-50 font-mono truncate max-w-[120px]">{displayName}</span>
+                                    </div>
+
+                                    {/* Thread Body */}
+                                    <div className="p-2 space-y-2">
+                                        
+                                        {/* 1. The Service Record (Parent) */}
+                                        {thread.service && (
+                                            <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                <input type="checkbox" /> 
+                                                <div className="collapse-title text-xs font-mono py-2 min-h-0">
+                                                    📄 Policy / Definition (NCC-02)
+                                                </div>
+                                                <div className="collapse-content"> 
+                                                    <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                        {JSON.stringify(thread.service, null, 2)}
+                                                    </pre>
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* 2. The Locators (Children) */}
+                                        {thread.locators.map((loc) => (
+                                            <div key={loc.id} className="ml-4 border-l-2 border-primary pl-2">
+                                                <div className="collapse collapse-arrow bg-base-100 border border-base-200 rounded-box">
+                                                    <input type="checkbox" /> 
+                                                    <div className="collapse-title text-xs font-mono py-2 min-h-0 flex items-center gap-2">
+                                                        <span>📍 Endpoint (NCC-05)</span>
+                                                        <span className="opacity-50 text-[10px]">
+                                                            Updated: {new Date(loc.created_at * 1000).toLocaleTimeString()}
+                                                        </span>
+                                                    </div>
+                                                    <div className="collapse-content"> 
+                                                        <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                            {JSON.stringify(loc, null, 2)}
+                                                        </pre>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        ))}
+
+                                        {thread.locators.length === 0 && (
+                                            <div className="text-xs opacity-50 italic ml-4 p-2">
+                                                No location endpoints published yet.
+                                            </div>
+                                        )}
+                                    </div>
+                                </div>
+                            );
+                        })}
+                    </div>
+                  );
+              })()}
            </div>
         )}
 
