@@ -1,8 +1,8 @@
 import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
-import { nip19 } from 'nostr-tools';
-import { Network, ArrowRight, ShieldCheck, AlertTriangle, Lock, User } from 'lucide-react';
+import { nip19, nip44 } from 'nostr-tools';
+import { Network, ArrowRight, ShieldCheck, AlertTriangle, Lock, User, Unlock } from 'lucide-react';
 import { DEFAULT_RELAYS } from '../lib/relays';
 
 interface DiscoveryProps {
@@ -11,7 +11,7 @@ interface DiscoveryProps {
 
 export function Discovery({ onConnect }: DiscoveryProps) {
   const { ncc05Resolver, ncc02Resolver, pool } = useNCC();
-  const { pubkey: myPubkey } = useAuth();
+  const { pubkey: myPubkey, privkey: myPrivkey } = useAuth();
   
   const [pubkeyInput, setPubkeyInput] = useState('');
   const [serviceId, setServiceId] = useState(''); // Empty for "all"
@@ -25,6 +25,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   const [resolvedEndpoint, setResolvedEndpoint] = useState<any>(null);
   const [rawEvents, setRawEvents] = useState<any[]>([]);
   const [profiles, setProfiles] = useState<Record<string, any>>({});
+  const [decryptedPayloads, setDecryptedPayloads] = useState<Record<string, any>>({});
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -79,6 +80,30 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       );
   };
 
+  // NOTE: Simple manual decrypt button handler for PoC
+  const handleDecryptClick = async (ev: any) => {
+      if (!myPrivkey) {
+          alert("Please login with a private key (nsec) to decrypt.");
+          return;
+      }
+      try {
+           // hexToBytes is needed for nostr-tools v2, but let's check what version we have.
+           // Assuming v2+, keys are Uint8Array.
+           // However, if we get typing errors, we might need a helper.
+           
+           // Simple hex to bytes helper inline if not imported
+           const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
+
+           const privKeyBytes = hexToBytes(myPrivkey);
+           const key = nip44.getConversationKey(privKeyBytes, ev.pubkey);
+           const decrypted = nip44.decrypt(ev.content, key);
+           setDecryptedPayloads(prev => ({ ...prev, [ev.id]: JSON.parse(decrypted) }));
+      } catch(e) {
+          console.error(e);
+          alert("Decryption failed. You may not be the target recipient or the key is incorrect.");
+      }
+  };
+
   const handleDiscover = async () => {
     setStep('verifying');
     setLogs([]);
@@ -86,6 +111,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     setResolvedEndpoint(null);
     setRawEvents([]);
     setProfiles({});
+    setDecryptedPayloads({});
 
     try {
       let hex = pubkeyInput;
@@ -336,6 +362,9 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                         {thread.locators.map((loc) => {
                                             // Check publisher's Kind 0 for 'privaterecipients'
                                             const targeted = isTargetedToMe(loc.pubkey);
+                                            // Check if content looks encrypted (no starting brace)
+                                            const isEncrypted = !loc.content.trim().startsWith('{');
+                                            const decrypted = decryptedPayloads[loc.id];
 
                                             return (
                                               <div key={loc.id} className={`ml-4 border-l-2 ${targeted ? 'border-success' : 'border-primary'} pl-2`}>
@@ -352,11 +381,41 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                                                   For You
                                                               </div>
                                                           )}
+                                                          {isEncrypted && !decrypted && (
+                                                              <div className="badge badge-warning badge-xs gap-1">
+                                                                  <Lock className="w-2 h-2" />
+                                                                  Encrypted
+                                                              </div>
+                                                          )}
+                                                          {decrypted && (
+                                                              <div className="badge badge-info badge-xs gap-1">
+                                                                  <Unlock className="w-2 h-2" />
+                                                                  Decrypted
+                                                              </div>
+                                                          )}
                                                       </div>
                                                       <div className="collapse-content"> 
-                                                          <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
-                                                              {JSON.stringify(loc, null, 2)}
-                                                          </pre>
+                                                          {isEncrypted && !decrypted ? (
+                                                              <div className="flex flex-col gap-2 p-2">
+                                                                  <div className="alert alert-warning text-xs p-2">
+                                                                      <Lock className="w-4 h-4" />
+                                                                      <span>Content is encrypted.</span>
+                                                                  </div>
+                                                                  <button 
+                                                                    className="btn btn-xs btn-neutral"
+                                                                    onClick={(e) => { e.stopPropagation(); handleDecryptClick(loc); }}
+                                                                  >
+                                                                     Attempt Decrypt
+                                                                  </button>
+                                                                  <div className="text-[10px] opacity-50 break-all font-mono">
+                                                                      {loc.content.slice(0, 50)}...
+                                                                  </div>
+                                                              </div>
+                                                          ) : (
+                                                              <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                                                                  {JSON.stringify(decrypted || loc, null, 2)}
+                                                              </pre>
+                                                          )}
                                                       </div>
                                                   </div>
                                               </div>
