@@ -59,7 +59,8 @@ export const RelayManager = {
     };
 
     const signed = await signEvent(event);
-    await pool.publish(urls.length > 0 ? urls : DEFAULT_RELAYS, signed);
+    const pubs = pool.publish(urls.length > 0 ? urls : DEFAULT_RELAYS, signed);
+    await Promise.any(pubs); // Wait for at least one relay to accept it
   },
 
   add(url: string) {

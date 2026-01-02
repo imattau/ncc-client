@@ -54,7 +54,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
           };
 
           const signed = await signEvent(event);
-          await pool.publish(RelayManager.load(), signed);
+          const pubs = pool.publish(RelayManager.load(), signed);
+          await Promise.any(pubs);
       } catch (e) {
           console.error("Tracking sync failed", e);
           throw e;

@@ -1,5 +1,5 @@
-import { useState, useEffect } from 'react';
-import { RelayManager, RelayHealth } from '../lib/relays';
+import { useState, useEffect, useCallback } from 'react';
+import { RelayManager, RelayHealth, DEFAULT_RELAYS } from '../lib/relays';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
@@ -19,7 +19,26 @@ export function Settings() {
     const [pendingEndpoints, setPendingEndpoints] = useState<string[] | null>(null);
 
     const [isSyncing, setIsSyncing] = useState(false);
+    const [hasRelayBackup, setHasRelayBackup] = useState<boolean | null>(null);
+    const [hasTrackingBackup, setHasTrackingBackup] = useState<boolean | null>(null);
     const { syncToNostr: syncTracking, restoreFromNostr: restoreTracking } = useTracking();
+
+    const checkBackupStatus = useCallback(async () => {
+        if (!sessionPubkey) return;
+        try {
+            // Check Relay List (10002)
+            const relayEvents = await pool.querySync(DEFAULT_RELAYS, { kinds: [10002], authors: [sessionPubkey], limit: 1 });
+            setHasRelayBackup(relayEvents.length > 0);
+
+            // Check Tracking (30078)
+            const trackingEvents = await pool.querySync(RelayManager.load(), { kinds: [30078], authors: [sessionPubkey], '#d': ['ncc-client-tracking'], limit: 1 });
+            setHasTrackingBackup(trackingEvents.length > 0);
+        } catch (e) { console.warn("Failed to check backup status", e); }
+    }, [sessionPubkey, pool]);
+
+    useEffect(() => {
+        if (sessionPubkey) checkBackupStatus();
+    }, [sessionPubkey, checkBackupStatus]);
 
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
 
@@ -28,6 +47,7 @@ export function Settings() {
         setIsSyncing(true);
         try {
             await syncTracking();
+            setHasTrackingBackup(true);
             alert("Tracking list backed up to Nostr (Kind 30078)");
         } catch (e: any) { alert("Sync failed: " + e.message); }
         finally { setIsSyncing(false); }
@@ -48,6 +68,7 @@ export function Settings() {
         setIsSyncing(true);
         try {
             await RelayManager.saveToNostr(pool, sessionPubkey, signEvent);
+            setHasRelayBackup(true);
             alert("Relay list synchronized to Nostr (Kind 10002)");
         } catch (e: any) {
             alert("Sync failed: " + e.message);
@@ -242,8 +263,8 @@ export function Settings() {
                             <button 
                                 className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
                                 onClick={handleFetchFromNostr}
-                                title="Fetch relay list from Nostr (Kind 10002)"
-                                disabled={!sessionPubkey || isSyncing}
+                                title={hasRelayBackup === false ? "No relay list found on network" : "Fetch relay list from Nostr (Kind 10002)"}
+                                disabled={!sessionPubkey || isSyncing || hasRelayBackup === false}
                             >
                                 <Download className="w-3 h-3 mr-1" /> Restore
                             </button>
@@ -352,7 +373,8 @@ export function Settings() {
                             <button 
                                 className={clsx("btn btn-xs btn-outline btn-primary", isSyncing && "loading")} 
                                 onClick={handleRestoreTracking}
-                                disabled={!sessionPubkey || isSyncing}
+                                title={hasTrackingBackup === false ? "No tracking data found on network" : "Restore tracking list from Nostr"}
+                                disabled={!sessionPubkey || isSyncing || hasTrackingBackup === false}
                             >
                                 <Download className="w-3 h-3 mr-1" /> Restore
                             </button>

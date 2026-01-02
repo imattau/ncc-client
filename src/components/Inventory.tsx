@@ -63,6 +63,7 @@ export function Inventory() {
     const [sidecarDiscovery, setSidecarDiscovery] = useState<{ loading: boolean, services: any[] }>({ loading: false, services: [] });
 
     const [isSyncing, setIsSyncing] = useState(false);
+    const [hasInventoryBackup, setHasInventoryBackup] = useState<boolean | null>(null);
 
     const hexToBytes = (hex: string) => Uint8Array.from(hex.match(/.{1,2}/g)?.map((byte) => parseInt(byte, 16)) || []);
     const bytesToHex = (uint8: Uint8Array) => Array.from(uint8).map(b => b.toString(16).padStart(2, '0')).join('');
@@ -99,6 +100,23 @@ export function Inventory() {
         }
     }, [allManagedPubkeys, pool]);
 
+    const checkBackupStatus = useCallback(async () => {
+        if (!currentPubkey) return;
+        try {
+            const events = await pool.querySync(RelayManager.load(), {
+                kinds: [30078],
+                authors: [currentPubkey],
+                '#d': ['ncc-client-inventory'],
+                limit: 1
+            });
+            setHasInventoryBackup(events.length > 0);
+        } catch (e) { console.warn("Failed to check inventory backup status", e); }
+    }, [currentPubkey, pool]);
+
+    useEffect(() => {
+        if (currentPubkey) checkBackupStatus();
+    }, [currentPubkey, checkBackupStatus]);
+
     const handleSyncToNostr = async () => {
         if (!currentPubkey || method === 'readonly') return;
         setIsSyncing(true);
@@ -119,7 +137,9 @@ export function Inventory() {
             };
 
             const signed = await signEvent(event);
-            await pool.publish(RelayManager.load(), signed);
+            const pubs = pool.publish(RelayManager.load(), signed);
+            await Promise.any(pubs);
+            setHasInventoryBackup(true);
             alert("Inventory backup successfully saved to Nostr (Kind 30078)");
         } catch (e: any) {
             alert("Backup failed: " + e.message);
@@ -444,8 +464,8 @@ export function Inventory() {
                     <button 
                         className={clsx("btn btn-sm btn-outline btn-primary", isSyncing && "loading")} 
                         onClick={handleRestoreFromNostr}
-                        title="Restore inventory from Nostr (Kind 30078)"
-                        disabled={!currentPubkey || isSyncing}
+                        title={hasInventoryBackup === false ? "No backup found on network" : "Restore inventory from Nostr (Kind 30078)"}
+                        disabled={!currentPubkey || isSyncing || hasInventoryBackup === false}
                     >
                         <Download className="w-4 h-4" /> Restore
                     </button>
