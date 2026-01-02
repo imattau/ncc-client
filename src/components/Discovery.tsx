@@ -213,17 +213,30 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         const userChoice = window.confirm(
             `🧅 Tor Onion Address Detected\n\n` +
             `Address: ${url}\n\n` +
-            `To connect, your device must be routing traffic via Tor (e.g. Orbot, Tor Browser, Brave).\n\n` +
-            `• Click OK to ATTEMPT CONNECTION.\n` +
-            `• Click CANCEL to stay here (you can copy the address manually).`
+            `Options:\n` +
+            `1. Connect via Local Bridge (Requires 'npm run bridge' running on localhost:3001)\n` +
+            `2. Connect Directly (Requires Tor Browser / Orbot)\n\n` +
+            `Click OK for Bridge, Cancel for Direct/Other.`
         );
         
-        if (!userChoice) {
-            const copy = window.confirm("Do you want to copy the address to clipboard instead?");
-            if (copy) {
-                 navigator.clipboard.writeText(url).then(() => alert("Copied!")).catch(() => prompt("Copy manually:", url));
-            }
+        if (userChoice) {
+            // Use Bridge
+            const bridgeUrl = `ws://localhost:3001?target=${encodeURIComponent(url)}`;
+            onConnect(bridgeUrl);
             return;
+        } else {
+             // Fallback logic
+             const direct = window.confirm("Attempt direct connection? (For Tor Browser/Orbot)");
+             if (direct) {
+                 onConnect(url);
+                 return;
+             }
+             
+             const copy = window.confirm("Copy address to clipboard?");
+             if (copy) {
+                 navigator.clipboard.writeText(url);
+             }
+             return;
         }
     }
 
