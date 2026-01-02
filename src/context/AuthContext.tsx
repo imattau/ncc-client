@@ -47,7 +47,9 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       }
 
       if (typeof window.nostr === 'undefined') {
-        alert('Nostr extension not found! Make sure you have Alby, nos2x, or similar installed.');
+        alert('Nostr extension not found!\n\n' + 
+              '• If you are on Desktop: Ensure Alby, nos2x, or a similar extension is installed and enabled.\n' +
+              '• If you are on Mobile: Most mobile browsers do not support extensions. Please use the "Private Key (nsec)" login method instead.');
         setState(prev => ({ ...prev, isLoading: false }));
         return;
       }
@@ -134,11 +136,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export const useAuth = () => {
+export function useAuth() {
   const context = useContext(AuthContext);
   if (!context) throw new Error('useAuth must be used within AuthProvider');
   return context;
-};
+}
 
 // Add window type
 declare global {

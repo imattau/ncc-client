@@ -82,11 +82,14 @@ wss.on('connection', (clientWs, req, targetUrl) => {
 
   // Handle data from Browser -> Onion Relay
   clientWs.on('message', (data, isBinary) => {
+    const msgStr = data.toString();
+    console.log(`[Bridge] << Client Message: ${msgStr.slice(0, 100)}${msgStr.length > 100 ? '...' : ''}`);
+
     if (remoteOpen && remoteWs.readyState === WebSocket.OPEN) {
       remoteWs.send(data, { binary: isBinary });
     } else {
       // Buffer the message until the remote is ready
-      console.log(`[Bridge] 📥 Buffering client message (${data.length} bytes)...`);
+      console.log(`[Bridge] 📥 Buffering client message...`);
       messageBuffer.push({ data, isBinary });
     }
   });

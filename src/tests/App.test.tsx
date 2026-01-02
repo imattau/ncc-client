@@ -73,11 +73,10 @@ describe('Feed Component', () => {
         // But our component updates state async.
     });
 
-    it('fails fast for onion addresses', async () => {
+    it('allows attempting onion connections (for Orbot/Tor Browser users)', async () => {
         render(<Feed relayUrl="ws://test.onion" />);
-        await waitFor(() => {
-            expect(screen.getByText(/Browsers cannot connect to .onion/i)).toBeInTheDocument();
-        });
+        // It should show connecting state
+        expect(screen.getByText(/connecting/i)).toBeInTheDocument();
     });
 });
 

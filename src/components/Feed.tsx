@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
-import { SimplePool, Event, Relay } from 'nostr-tools';
+import { SimplePool, Event } from 'nostr-tools';
 import { Radio, User, RefreshCw, AlertCircle } from 'lucide-react';
 
 interface FeedProps {
@@ -31,47 +31,25 @@ export function Feed({ relayUrl }: FeedProps) {
   const connectAndSubscribe = async () => {
     if (!relayUrl) return;
 
-    // Browser Safety Check for Onion Addresses
-    // We allow the attempt because the user might be using Orbot/Tor Browser.
-    // If it fails, the standard error handler will catch it.
+    // Warning for Tor
     if (relayUrl.includes('.onion')) {
-        console.warn("[Feed] Attempting connection to .onion address. This requires a Tor-enabled browser or system proxy.");
+        console.warn("[Feed] Tor connection requested. Handshake may take up to 45 seconds.");
     }
 
     setStatus('connecting');
     setErrorMsg(null);
     setEvents([]);
 
-    console.log(`[Feed] Attempting to connect to ${relayUrl}...`);
+    console.log(`[Feed] Subscribing to ${relayUrl}...`);
 
-    try {
-        // Explicitly test connection first with a timeout
-        // This ensures we don't just sit in 'connecting' forever
-        console.log(`[Feed] Testing connection to ${relayUrl}...`);
-        
-        const connectionPromise = Relay.connect(relayUrl);
-        const timeoutPromise = new Promise((_, reject) => 
-            setTimeout(() => reject(new Error("Connection timed out (15s limit reached)")), 15000)
-        );
+    let hasReceivedAnything = false;
 
-        const r = await Promise.race([connectionPromise, timeoutPromise]) as Relay;
-        
-        console.log(`[Feed] Connection verified to ${relayUrl}`);
-        r.close(); 
-    } catch (e: any) {
-        console.error(`[Feed] Connection failed:`, e);
-        setStatus('error');
-        setErrorMsg(e.message || "Connection timed out or refused.");
-        return;
-    }
-
-    // Subscribe via Pool
     const sub = pool.current.subscribeMany(
       [relayUrl],
       [{ kinds: [1], limit: 40 }] as any,
       {
         onevent(event) {
-          console.debug(`[Feed] Event received:`, event.id);
+          hasReceivedAnything = true;
           setEvents(prev => {
             if (prev.find(e => e.id === event.id)) return prev;
             return [event, ...prev].sort((a, b) => b.created_at - a.created_at);
@@ -79,23 +57,41 @@ export function Feed({ relayUrl }: FeedProps) {
           setStatus('connected');
         },
         oneose() {
-           console.log(`[Feed] EOSE (End of Stored Events) received.`);
+           hasReceivedAnything = true;
+           console.log(`[Feed] EOSE received from ${relayUrl}.`);
            setStatus('connected');
+        },
+        onclose(reasons) {
+            console.error("[Feed] Subscription closed:", reasons);
+            if (!hasReceivedAnything) {
+                setStatus('error');
+                setErrorMsg(`Connection closed by relay or bridge.`);
+            }
         }
       }
     );
 
+    // Watchdog timer for slow connections (especially Tor)
+    const watchdog = setTimeout(() => {
+        if (!hasReceivedAnything && status === 'connecting') {
+            console.error(`[Feed] Connection watchdog triggered after 30s`);
+            setStatus('error');
+            setErrorMsg("Relay did not respond. Tor might be slow or the relay is empty.");
+            sub.close();
+        }
+    }, 30000);
+
     return () => {
+      clearTimeout(watchdog);
       sub.close();
     };
   };
 
   useEffect(() => {
     if (relayUrl) {
-        const cleanupPromise = connectAndSubscribe();
-        return () => {
-            cleanupPromise.then(cleanup => cleanup && cleanup());
-        };
+        let cleanup: any;
+        connectAndSubscribe().then(c => cleanup = c);
+        return () => cleanup && cleanup();
     }
   }, [relayUrl]);
 
@@ -159,7 +155,14 @@ export function Feed({ relayUrl }: FeedProps) {
                     Retry
                 </button>
             ) : (
-                <div className="text-xs opacity-50">Live Feed</div>
+                <button 
+                    className={`btn btn-sm btn-ghost ${status === 'connecting' ? 'loading' : ''}`} 
+                    onClick={() => connectAndSubscribe()}
+                    disabled={status === 'connecting'}
+                >
+                    <RefreshCw className="w-4 h-4" />
+                    <span className="hidden sm:inline ml-2">Refresh</span>
+                </button>
             )}
         </div>
       </div>

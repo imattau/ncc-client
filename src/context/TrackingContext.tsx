@@ -136,8 +136,8 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export const useTracking = () => {
+export function useTracking() {
   const context = useContext(TrackingContext);
   if (!context) throw new Error('useTracking must be used within TrackingProvider');
   return context;
-};
+}

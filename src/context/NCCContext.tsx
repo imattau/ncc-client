@@ -50,8 +50,8 @@ export function NCCProvider({ children }: { children: React.ReactNode }) {
   );
 }
 
-export const useNCC = () => {
+export function useNCC() {
   const context = useContext(NCCContext);
   if (!context) throw new Error('useNCC must be used within NCCProvider');
   return context;
-};
+}

@@ -61,8 +61,8 @@ export function DiscoveryProvider({ children }: { children: ReactNode }) {
   );
 }
 
-export const useDiscovery = () => {
+export function useDiscovery() {
   const context = useContext(DiscoveryContext);
   if (!context) throw new Error('useDiscovery must be used within DiscoveryProvider');
   return context;
-};
+}
