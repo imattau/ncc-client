@@ -2,16 +2,17 @@ import { useState } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { nip19 } from 'nostr-tools';
 import { Network, ArrowRight, ShieldCheck, AlertTriangle } from 'lucide-react';
+import { DEFAULT_RELAYS } from '../lib/relays';
 
 interface DiscoveryProps {
   onConnect: (url: string) => void;
 }
 
 export function Discovery({ onConnect }: DiscoveryProps) {
-  const { ncc05Resolver, ncc02Resolver } = useNCC();
+  const { ncc05Resolver, ncc02Resolver, pool } = useNCC();
   
   const [pubkeyInput, setPubkeyInput] = useState('');
-  const [serviceId, setServiceId] = useState('relay'); // Default to looking for a relay
+  const [serviceId, setServiceId] = useState(''); // Empty for "all"
   
   // State for the multi-step process
   const [step, setStep] = useState<'idle' | 'verifying' | 'resolving' | 'complete'>('idle');
@@ -20,6 +21,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
   
   // Result
   const [resolvedEndpoint, setResolvedEndpoint] = useState<any>(null);
+  const [rawEvents, setRawEvents] = useState<any[]>([]);
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
 
@@ -28,6 +30,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     setLogs([]);
     setError(null);
     setResolvedEndpoint(null);
+    setRawEvents([]);
 
     try {
       let hex = pubkeyInput;
@@ -36,33 +39,77 @@ export function Discovery({ onConnect }: DiscoveryProps) {
         hex = data as string;
       }
 
-      // 1. NCC-02 Verification
-      addLog(`🔍 NCC-02: Verifying ownership of service '${serviceId}'...`);
-      // We don't enforce attestation for this PoC to allow self-hosted services easily
-      await ncc02Resolver.resolve(hex, serviceId, {
-        requireAttestation: false, 
-        minLevel: 'self'
-      });
+      // GLOBAL SEARCH (No Pubkey)
+      if (!hex) {
+          addLog(`🌐 Global Search: Querying bootstrap relays for Kind 30059/30058...`);
+          
+          const filter: any = {
+             kinds: [30058, 30059],
+             limit: 50 // Limit to avoid overwhelming PoC
+          };
+          
+          if (serviceId) {
+             filter['#d'] = [serviceId];
+             addLog(`   Filter by Service ID: '${serviceId}'`);
+          }
+
+          const events = await pool.querySync(DEFAULT_RELAYS, filter);
+          setRawEvents(events);
+          addLog(`✅ Found ${events.length} records globally.`);
+          setStep('complete');
+          return;
+      }
+
+      // 1. Inspect/Resolve NCC-02
+      addLog(`🔍 NCC-02: Querying Kind 30059 events...`);
       
-      // trustRecord structure depends on the lib version, safe to just say verified if it didn't throw.
-      addLog(`✅ NCC-02: Service verified.`);
-      
-      // 2. NCC-05 Resolution
-      setStep('resolving');
-      addLog(`🌍 NCC-05: Resolving location for identifier '${serviceId}'...`);
-      
-      const locationRecord = await ncc05Resolver.resolve(hex, undefined, serviceId, { gossip: false });
-      
-      if (!locationRecord || !locationRecord.endpoints || locationRecord.endpoints.length === 0) {
-        throw new Error('Service verified, but no location endpoints found via NCC-05.');
+      // If serviceId is provided, we use the library resolver.
+      // If not, we'll manually fetch kind 30059 to see what's available.
+      if (serviceId) {
+        await ncc02Resolver.resolve(hex, serviceId, {
+          requireAttestation: false, 
+          minLevel: 'self'
+        });
+        addLog(`✅ NCC-02: Service '${serviceId}' verified.`);
+      } else {
+        // Fetch all 30059 for this pubkey
+        const events = await pool.querySync(ncc02Resolver.relays, {
+           kinds: [30059],
+           authors: [hex]
+        });
+        setRawEvents(prev => [...prev, ...events]);
+        addLog(`✅ NCC-02: Found ${events.length} service records.`);
       }
       
-      addLog(`📍 NCC-05: Found ${locationRecord.endpoints.length} endpoints.`);
+      // 2. Inspect/Resolve NCC-05
+      setStep('resolving');
+      addLog(`🌍 NCC-05: Querying Kind 30058 events...`);
       
-      // Select best endpoint (simple priority sort)
-      const bestEndpoint = locationRecord.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0];
-      setResolvedEndpoint(bestEndpoint);
-      setStep('complete');
+      if (serviceId) {
+        const locationRecord = await ncc05Resolver.resolve(hex, undefined, serviceId, { gossip: false });
+        if (locationRecord && locationRecord.endpoints?.length > 0) {
+           const bestEndpoint = locationRecord.endpoints.sort((a: any, b: any) => (a.priority || 0) - (b.priority || 0))[0];
+           setResolvedEndpoint(bestEndpoint);
+           addLog(`📍 NCC-05: Found location for '${serviceId}'.`);
+        }
+      } else {
+         // Fetch all 30058 for this pubkey
+         const events = await pool.querySync((ncc05Resolver as any).bootstrapRelays, {
+            kinds: [30058],
+            authors: [hex]
+         });
+         setRawEvents(prev => [...prev, ...events]);
+         addLog(`✅ NCC-05: Found ${events.length} locator records.`);
+      }
+      
+      if (!serviceId) {
+         setStep('complete');
+      } else if (resolvedEndpoint) {
+         setStep('complete');
+      } else {
+         addLog(`⚠️ No specific endpoint resolved for '${serviceId}'.`);
+         setStep('idle');
+      }
 
     } catch (e: any) {
       console.error(e);
@@ -71,6 +118,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       setStep('idle');
     }
   };
+
 
   const handleConnect = () => {
     if (!resolvedEndpoint) return;
@@ -100,7 +148,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
       <div className="card-body">
         <h3 className="card-title text-xl mb-4 flex items-center">
           <Network className="w-6 h-6 mr-2 text-primary" />
-          Service Discovery
+          Discovery (Dev Mode)
         </h3>
         
         <div className="flex flex-col gap-4">
@@ -115,17 +163,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
           </div>
           
            <div className="form-control">
-            <label className="label">Service ID</label>
-            <select 
-              className="select select-bordered" 
+            <label className="label text-xs">Service ID (Optional - leave empty to list all)</label>
+            <input 
+              className="input input-bordered" 
+              placeholder="e.g. relay, media" 
               value={serviceId} 
               onChange={e => setServiceId(e.target.value)}
-            >
-               <option value="relay">Relay (relay)</option>
-               <option value="media">Media Server (media)</option>
-               <option value="outbox">Outbox (outbox)</option>
-               <option value="chat">Chat Server (chat)</option>
-            </select>
+            />
           </div>
 
           <button 
@@ -134,7 +178,7 @@ export function Discovery({ onConnect }: DiscoveryProps) {
             disabled={step === 'verifying' || step === 'resolving'}
           >
             {step !== 'idle' && step !== 'complete' && <span className="loading loading-spinner"></span>}
-            Discover Service
+            Run Discovery
           </button>
         </div>
 
@@ -152,6 +196,28 @@ export function Discovery({ onConnect }: DiscoveryProps) {
              <div key={i} className="mb-1">{log}</div>
            ))}
         </div>
+
+        {/* Raw Events (Dev) */}
+        {rawEvents.length > 0 && (
+           <div className="mt-4">
+              <h4 className="text-sm font-bold mb-2">Found Events ({rawEvents.length})</h4>
+              <div className="space-y-2">
+                 {rawEvents.map((ev, i) => (
+                    <div key={i} className="collapse collapse-arrow bg-base-200 border border-base-300">
+                       <input type="radio" name="events-accordion" /> 
+                       <div className="collapse-title text-xs font-mono">
+                          Kind {ev.kind} - d:{ev.tags.find((t: any) => t[0] === 'd')?.[1] || 'none'}
+                       </div>
+                       <div className="collapse-content"> 
+                          <pre className="text-[10px] overflow-x-auto bg-black text-green-500 p-2 rounded">
+                             {JSON.stringify(ev, null, 2)}
+                          </pre>
+                       </div>
+                    </div>
+                 ))}
+              </div>
+           </div>
+        )}
 
         {/* Success / Connect */}
         {resolvedEndpoint && step === 'complete' && (
@@ -179,4 +245,5 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     </div>
   );
 }
+
 
