@@ -31,6 +31,13 @@ export function Feed({ relayUrl }: FeedProps) {
   const connectAndSubscribe = async () => {
     if (!relayUrl) return;
 
+    // Browser Safety Check for Onion Addresses
+    if (relayUrl.includes('.onion')) {
+        setStatus('error');
+        setErrorMsg("Browsers cannot connect to .onion Relays directly. Use a Tor-enabled native app.");
+        return;
+    }
+
     setStatus('connecting');
     setErrorMsg(null);
     setEvents([]);
