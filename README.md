@@ -1,14 +1,17 @@
 # NCC Client PoC: Infrastructure Management & Discovery Without DNS
 
-A reference implementation and Proof of Concept (PoC) for the **Nostr Community Conventions (NCC)**, specifically focusing on **NCC-01** (Service Details), **NCC-02** (Trust and Discovery), and **NCC-05** (Identity-Bound Service Locators).
+A reference implementation and Proof of Concept (PoC) for the **Nostr Community Conventions (NCC)**, specifically focusing on **NCC-02** (Trust and Discovery) and **NCC-05** (Identity-Bound Service Locators).
 
 This client demonstrates how to build a decentralized infrastructure where **Nostr Identities (Pubkeys)** replace traditional **DNS Hostnames**.
 
-## 🛰️ Core Concept: No-DNS Architecture
+## 🛰️ Core Concept: Nostr Community Conventions (NCC-00)
 
-In this model, services (like Nostr relays, media servers, or chat rooms) are not found via standard DNS lookups. Instead:
+The **NCC-00** convention establishes the framework for **Nostr Community Conventions**. It defines the standards for how specific protocols (like service discovery or location) are proposed, identified, and interoperably implemented across the Nostr ecosystem without requiring changes to the core protocol.
+
+### Implementation Logic (NCC-02 & NCC-05)
+Building on the framework defined in NCC-00, this project implements a "No-DNS" model:
 1. **Ownership (NCC-02):** An identity publishes a record (Kind 30059) claiming ownership of a service identifier (e.g., `relay`).
-2. **Location (NCC-05):** The identity publishes dynamic locator records (Kind 30058) containing physical endpoints (IPs, Tor `.onion` addresses).
+2. **Location (NCC-05):** The identity publishes dynamic locator records (Kind 30058) containing the physical endpoints (IPs, Tor `.onion` addresses).
 3. **Trust:** Users verify ownership and can optionally require third-party attestations (Kind 30060) or Web of Trust (WoT) validation before connecting.
 
 ---
