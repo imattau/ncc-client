@@ -211,21 +211,23 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     }
     if (url.startsWith('http')) url = url.replace('http', 'ws');
 
+    // Special Handling for Onion Addresses
     if (url.includes('.onion')) {
-        const confirmCopy = window.confirm(
-            `🧅 Tor Onion Relay Detected: ${url}\n\n` +
-            `Standard web browsers cannot connect directly to WebSocket Onion addresses.\n\n` +
-            `Click OK to copy this address to your clipboard for use in a native Tor-enabled client.`
+        const userChoice = window.confirm(
+            `🧅 Tor Onion Address Detected\n\n` +
+            `Address: ${url}\n\n` +
+            `To connect, your device must be routing traffic via Tor (e.g. Orbot, Tor Browser, Brave).\n\n` +
+            `• Click OK to ATTEMPT CONNECTION.\n` +
+            `• Click CANCEL to stay here (you can copy the address manually).`
         );
         
-        if (confirmCopy) {
-            navigator.clipboard.writeText(url).then(() => {
-                alert('Address copied to clipboard!');
-            }).catch(() => {
-                alert('Failed to copy. Please copy it manually from the display.');
-            });
+        if (!userChoice) {
+            const copy = window.confirm("Do you want to copy the address to clipboard instead?");
+            if (copy) {
+                 navigator.clipboard.writeText(url).then(() => alert("Copied!")).catch(() => prompt("Copy manually:", url));
+            }
+            return;
         }
-        return; 
     }
 
     onConnect(url);
