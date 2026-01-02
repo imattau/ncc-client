@@ -22,6 +22,8 @@ interface DiscoveryState {
   setDecryptedPayloads: (v: Record<string, any> | ((prev: Record<string, any>) => Record<string, any>)) => void;
   showExpired: boolean;
   setShowExpired: (v: boolean) => void;
+  attestedIds: string[];
+  setAttestedIds: (v: string[] | ((prev: string[]) => string[])) => void;
 }
 
 const DiscoveryContext = createContext<DiscoveryState | undefined>(undefined);
@@ -37,6 +39,7 @@ export function DiscoveryProvider({ children }: { children: ReactNode }) {
   const [profiles, setProfiles] = useState<Record<string, any>>({});
   const [decryptedPayloads, setDecryptedPayloads] = useState<Record<string, any>>({});
   const [showExpired, setShowExpired] = useState(false);
+  const [attestedIds, setAttestedIds] = useState<string[]>([]);
 
   const addLog = (msg: string) => setLogs(prev => [...prev, msg]);
   const clearLogs = () => setLogs([]);
@@ -51,7 +54,8 @@ export function DiscoveryProvider({ children }: { children: ReactNode }) {
     rawEvents, setRawEvents,
     profiles, setProfiles,
     decryptedPayloads, setDecryptedPayloads,
-    showExpired, setShowExpired
+    showExpired, setShowExpired,
+    attestedIds, setAttestedIds
   };
 
   return (

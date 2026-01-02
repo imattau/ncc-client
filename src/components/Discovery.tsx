@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useNCC } from '../context/NCCContext';
 import { useAuth } from '../context/AuthContext';
 import { useTracking } from '../context/TrackingContext';
@@ -41,12 +41,29 @@ export function Discovery({ onConnect }: DiscoveryProps) {
     rawEvents, setRawEvents,
     profiles, setProfiles,
     decryptedPayloads, setDecryptedPayloads,
-    showExpired, setShowExpired
+    showExpired, setShowExpired,
+    attestedIds, setAttestedIds
   } = useDiscovery();
 
   const [probing, setProbing] = useState<Record<string, number | 'error' | 'loading'>>({});
   const [wotOnly, setWotOnly] = useState(false);
-  const [attestedIds, setAttestedIds] = useState<string[]>([]);
+
+  // Background Scanner: Find attestations in the existing record cache
+  useEffect(() => {
+      if (rawEvents.length > 0 && myPubkey) {
+          const selfAttestedIds = rawEvents
+              .filter(e => e.kind === 30060 && e.pubkey === myPubkey)
+              .map(e => e.tags.find((t: any) => t[0] === 'e')?.[1])
+              .filter(id => id) as string[];
+          
+          if (selfAttestedIds.length > 0) {
+              setAttestedIds(prev => {
+                  const combined = [...new Set([...prev, ...selfAttestedIds])];
+                  return combined.length === prev.length ? prev : combined;
+              });
+          }
+      }
+  }, [rawEvents, myPubkey]);
 
   const probeEndpoint = async (url: string) => {
       setProbing((prev: any) => ({ ...prev, [url]: 'loading' }));

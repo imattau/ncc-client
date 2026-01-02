@@ -34,7 +34,7 @@ function Main() {
   useEffect(() => {
       const checkBridge = async () => {
           try {
-              const ws = new WebSocket(`ws://${window.location.host}/bridge?target=ws://localhost:1`);
+              const ws = new WebSocket(`ws://${window.location.host}/bridge?target=internal-ping`);
               const timer = setTimeout(() => ws.close(), 2000);
               ws.onopen = () => { clearTimeout(timer); setBridgeOnline(true); ws.close(); };
               ws.onerror = () => { clearTimeout(timer); setBridgeOnline(false); };

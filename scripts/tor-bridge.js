@@ -31,16 +31,39 @@ server.on('upgrade', (request, socket, head) => {
   }
 
   wss.handleUpgrade(request, socket, head, (ws) => {
-    wss.emit('connection', ws, request, target);
+    wss.emit('connection', ws, request);
   });
 });
 
-wss.on('connection', (clientWs, req, targetUrl) => {
+wss.on('connection', (clientWs, req) => {
+  const reqUrl = new URL(req.url || '', `http://${req.headers.host || 'localhost'}`);
+  const targetUrl = reqUrl.searchParams.get('target');
+
+  if (targetUrl === 'internal-ping') {
+      clientWs.send('pong');
+      clientWs.close();
+      return;
+  }
+
+  if (!targetUrl) {
+      console.error("[Bridge] Connection failed: No target URL provided.");
+      clientWs.close();
+      return;
+  }
+
   let isClosed = false;
   let remoteOpen = false;
   const messageBuffer = [];
 
-  const parsedTarget = new URL(targetUrl);
+  let parsedTarget;
+  try {
+      parsedTarget = new URL(targetUrl);
+  } catch (e) {
+      console.error(`[Bridge] Invalid target URL: ${targetUrl}`);
+      clientWs.close();
+      return;
+  }
+
   console.log(`[Bridge] [${new Date().toLocaleTimeString()}] Tunneling: Client -> ${targetUrl}`);
 
   // Connect to the Onion Relay via SOCKS Agent

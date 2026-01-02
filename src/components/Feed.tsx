@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { SimplePool, Event } from 'nostr-tools';
-import { Radio, User, RefreshCw, AlertCircle } from 'lucide-react';
+import { Radio, User, RefreshCw, AlertCircle, ArrowUp, ArrowDown, SortDesc } from 'lucide-react';
+import clsx from 'clsx';
 
 interface FeedProps {
   relayUrl: string | null;
@@ -29,9 +30,12 @@ export function Feed({ relayUrl }: FeedProps) {
   const [profiles, setProfiles] = useState<Record<string, UserProfile>>({});
   const [status, setStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected');
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [sortOrder, setSortOrder] = useState<'asc' | 'desc'>('desc');
   const pool = useRef(new SimplePool());
   const pendingCommitRef = useRef<Event[]>([]);
   const commitTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const [refreshTrigger, setRefreshTrigger] = useState(0);
 
   const scheduleEventCommit = (event: Event) => {
     pendingCommitRef.current.push(event);
@@ -75,9 +79,19 @@ export function Feed({ relayUrl }: FeedProps) {
             });
 
             if (!changed) return prev;
-            return [...newEvents].sort((a, b) => b.created_at - a.created_at);
+            return sortEvents([...newEvents], sortOrder);
         });
     }, 100);
+  };
+
+  const sortEvents = (evs: Event[], order: 'asc' | 'desc') => {
+      return [...evs].sort((a, b) => order === 'asc' ? a.created_at - b.created_at : b.created_at - a.created_at);
+  };
+
+  const toggleSort = () => {
+      const next = sortOrder === 'asc' ? 'desc' : 'asc';
+      setSortOrder(next);
+      setEvents(prev => sortEvents(prev, next));
   };
   
   // Clear events when relay changes
@@ -93,69 +107,64 @@ export function Feed({ relayUrl }: FeedProps) {
     }
   }, [relayUrl]);
 
-  const connectAndSubscribe = async () => {
+  useEffect(() => {
     if (!relayUrl) return;
 
-    setStatus('connecting');
-    setErrorMsg(null);
-    setEvents([]);
-
-    // Warning for Tor
-    if (relayUrl.includes('.onion')) {
-        console.warn("[Feed] Tor connection requested. Handshake may take up to 45 seconds.");
-    }
-
-    console.log(`[Feed] Subscribing to ${relayUrl}...`);
-
+    let sub: any;
+    let watchdog: any;
     let hasReceivedAnything = false;
 
-    const sub = pool.current.subscribeMany(
-      [relayUrl],
-      [{ kinds: [1, 30051, 30053, 30058, 30059, 30060, 30061], limit: 50 }] as any,
-      {
-        onevent(event) {
-          hasReceivedAnything = true;
-          scheduleEventCommit(event);
-          setStatus('connected');
-        },
-        oneose() {
-           hasReceivedAnything = true;
-           console.log(`[Feed] EOSE received from ${relayUrl}.`);
-           setStatus('connected');
-        },
-        onclose(reasons) {
-            console.error("[Feed] Subscription closed:", reasons);
-            if (!hasReceivedAnything) {
-                setStatus('error');
-                setErrorMsg(`Connection closed by relay or bridge.`);
-            }
-        }
-      }
-    );
+    const start = async () => {
+        setStatus('connecting');
+        setErrorMsg(null);
 
-    // Watchdog timer for slow connections (especially Tor)
-    const watchdog = setTimeout(() => {
-        if (!hasReceivedAnything && status === 'connecting') {
-            console.error(`[Feed] Connection watchdog triggered after 30s`);
-            setStatus('error');
-            setErrorMsg("Relay did not respond. Tor might be slow or the relay is empty.");
-            sub.close();
+        if (relayUrl.includes('.onion')) {
+            console.warn("[Feed] Tor connection requested. Handshake may take up to 45 seconds.");
         }
-    }, 30000);
+
+        console.log(`[Feed] Subscribing to ${relayUrl}...`);
+
+        sub = pool.current.subscribeMany(
+          [relayUrl],
+          [{ kinds: [1, 30051, 30053, 30058, 30059, 30060, 30061], limit: 50 }] as any,
+          {
+            onevent(event) {
+              hasReceivedAnything = true;
+              scheduleEventCommit(event);
+              setStatus('connected');
+            },
+            oneose() {
+               hasReceivedAnything = true;
+               console.log(`[Feed] EOSE received from ${relayUrl}.`);
+               setStatus('connected');
+            },
+            onclose(reasons) {
+                console.error("[Feed] Subscription closed:", reasons);
+                if (!hasReceivedAnything) {
+                    setStatus('error');
+                    setErrorMsg(`Connection closed by relay or bridge.`);
+                }
+            }
+          }
+        );
+
+        watchdog = setTimeout(() => {
+            if (!hasReceivedAnything) {
+                console.error(`[Feed] Connection watchdog triggered after 30s`);
+                setStatus('error');
+                setErrorMsg("Relay did not respond. Tor might be slow or the relay is empty.");
+                if (sub) sub.close();
+            }
+        }, 30000);
+    };
+
+    start();
 
     return () => {
-      clearTimeout(watchdog);
-      sub.close();
+      if (watchdog) clearTimeout(watchdog);
+      if (sub) sub.close();
     };
-  };
-
-  useEffect(() => {
-    if (relayUrl) {
-        let cleanup: any;
-        connectAndSubscribe().then(c => cleanup = c);
-        return () => cleanup && cleanup();
-    }
-  }, [relayUrl]);
+  }, [relayUrl, refreshTrigger]);
 
   // Fetch Profiles (Kind 0) for new authors
   useEffect(() => {
@@ -186,7 +195,7 @@ export function Feed({ relayUrl }: FeedProps) {
     return () => {
        sub.close();
     };
-  }, [events, relayUrl]);
+  }, [events.length, relayUrl]); // Only re-fetch if event count changes
 
   if (!relayUrl) {
     return (
@@ -211,16 +220,24 @@ export function Feed({ relayUrl }: FeedProps) {
                    </span>
                </div>
             </div>
-            <div>
+            <div className="flex items-center gap-2">
+                <button 
+                    className="btn btn-sm btn-ghost gap-2" 
+                    onClick={toggleSort}
+                    title={sortOrder === 'desc' ? "Showing Newest First" : "Showing Oldest First"}
+                >
+                    <SortDesc className={clsx("w-4 h-4", sortOrder === 'asc' && "rotate-180 transition-transform")} />
+                    {sortOrder === 'desc' ? <ArrowDown className="w-3 h-3" /> : <ArrowUp className="w-3 h-3" />}
+                </button>
                 {status === 'error' ? (
-                    <button className="btn btn-sm btn-error" onClick={() => connectAndSubscribe()}>
+                    <button className="btn btn-sm btn-error" onClick={() => setRefreshTrigger(prev => prev + 1)}>
                         <RefreshCw className="w-4 h-4 mr-2" />
                         Retry
                     </button>
                 ) : (
                     <button 
                         className={`btn btn-sm btn-ghost ${status === 'connecting' ? 'loading' : ''}`} 
-                        onClick={() => connectAndSubscribe()}
+                        onClick={() => setRefreshTrigger(prev => prev + 1)}
                         disabled={status === 'connecting'}
                     >
                         <RefreshCw className="w-4 h-4" />
