@@ -50,12 +50,22 @@ Building on the framework defined in NCC-00, this project implements a "No-DNS" 
 - **Tor (Optional)**: Required for `.onion` support. A local Tor daemon must be running (default port `9050`).
 - **Nostr Extension**: Alby or nos2x (recommended for secure signing).
 
-### 2. Installation & Development
+### 2. Installation & Usage
+
+**Development Mode** (with Hot Refresh):
 ```bash
 npm install
 npm run dev
 ```
-The app will be available at `http://localhost:5173`. The Tor bridge will start automatically on port 3001.
+The app will be available at `http://localhost:5173`.
+
+**Production Mode** (Optimized & Stable):
+```bash
+npm install
+npm run build
+npm start
+```
+The production server will be available at `http://localhost:5173`. In both modes, the Tor bridge will start automatically on port 3001.
 
 ---
 
