@@ -186,6 +186,22 @@ export function Feed({ relayUrl }: FeedProps) {
           const profile = profiles[ev.pubkey];
           const name = profile?.display_name || profile?.name || ev.pubkey.slice(0, 8);
           
+          // NCC Compliance Checks
+          const hasExp = ev.tags.some(t => t[0] === 'exp');
+          const hasTtlTag = ev.tags.some(t => t[0] === 'ttl');
+          let hasTtlInContent = false;
+          try {
+              if (ev.kind === 30058 && ev.content.startsWith('{')) {
+                  const p = JSON.parse(ev.content);
+                  if (p.ttl) hasTtlInContent = true;
+              }
+          } catch(e) {}
+
+          const isNcc02 = ev.kind === 30059 && hasExp;
+          const isNcc05 = ev.kind === 30058 && (hasTtlTag || hasTtlInContent || ev.tags.some(t => t[0] === 'private'));
+          const isNccAttestation = ev.kind === 30060;
+          const isNccRevocation = ev.kind === 30061;
+
           return (
             <div key={ev.id} className="card bg-base-100 shadow-sm border border-base-200">
               <div className="card-body p-4">
@@ -208,10 +224,16 @@ export function Feed({ relayUrl }: FeedProps) {
                      <div className="flex items-center justify-between mb-1">
                        <div className="font-bold text-sm truncate text-primary">{name}</div>
                        <div className="flex items-center gap-2">
-                          {ev.kind === 30058 && <div className="badge badge-primary badge-xs">NCC-05 LOCATOR</div>}
-                          {ev.kind === 30059 && <div className="badge badge-secondary badge-xs">NCC-02 SERVICE</div>}
-                          {ev.kind === 30060 && <div className="badge badge-accent badge-xs">NCC-02 ATTESTATION</div>}
-                          {ev.kind === 30061 && <div className="badge badge-error badge-xs">NCC-02 REVOCATION</div>}
+                          {isNcc05 && <div className="badge badge-primary badge-xs">NCC-05 LOCATOR</div>}
+                          {isNcc02 && <div className="badge badge-secondary badge-xs">NCC-02 SERVICE</div>}
+                          {isNccAttestation && <div className="badge badge-accent badge-xs">NCC-02 ATTESTATION</div>}
+                          {isNccRevocation && <div className="badge badge-error badge-xs">NCC-02 REVOCATION</div>}
+                          
+                          {/* Generic Fallback for NCC kinds without expected tags */}
+                          {!isNcc05 && !isNcc02 && !isNccAttestation && !isNccRevocation && ev.kind >= 30058 && ev.kind <= 30061 && (
+                              <div className="badge badge-ghost badge-xs opacity-50 text-[8px]">KIND {ev.kind}</div>
+                          )}
+
                           <div className="text-[10px] opacity-50 whitespace-nowrap font-mono">
                             {new Date(ev.created_at * 1000).toLocaleTimeString()}
                           </div>
@@ -223,10 +245,10 @@ export function Feed({ relayUrl }: FeedProps) {
                         ) : (
                             <div className="bg-base-200 p-2 rounded text-xs font-mono overflow-x-auto">
                                 <div className="font-bold mb-1 opacity-50 italic">
-                                    {ev.kind === 30058 && "Service Locator (Kind 30058)"}
-                                    {ev.kind === 30059 && "Service Record (Kind 30059)"}
-                                    {ev.kind === 30060 && "Service Attestation (Kind 30060)"}
-                                    {ev.kind === 30061 && "Service Revocation (Kind 30061)"}
+                                    {isNcc05 ? "Service Locator (NCC-05)" : 
+                                     isNcc02 ? "Service Record (NCC-02)" :
+                                     isNccAttestation ? "Service Attestation" :
+                                     isNccRevocation ? "Service Revocation" : `Event Kind ${ev.kind}`}
                                 </div>
                                 <div>d-tag: {ev.tags.find(t => t[0] === 'd')?.[1] || 'none'}</div>
                                 <div className="opacity-70 mt-1 truncate">Content: {ev.content.slice(0, 100)}{ev.content.length > 100 && '...'}</div>
