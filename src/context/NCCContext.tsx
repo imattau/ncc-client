@@ -15,17 +15,26 @@ interface NCCContextType {
 const NCCContext = createContext<NCCContextType | undefined>(undefined);
 
 export function NCCProvider({ children }: { children: React.ReactNode }) {
-  
+  const bridgeOnion = (url: string) => {
+      if (url.includes('.onion') && !url.includes('/bridge?target=')) {
+          return `ws://${window.location.host}/bridge?target=${encodeURIComponent(url)}`;
+      }
+      return url;
+  };
+
   const value = useMemo(() => {
-    const bootstrap = RelayManager.load();
+    const rawBootstrap = RelayManager.load();
+    const bootstrap = rawBootstrap.map(bridgeOnion);
 
     // Global URL Transformer for NCC-05
     // Automatically wraps onion addresses in the bridge URL
     const urlTransformer = (ep: any) => {
-        if (ep.url.includes('.onion') && !ep.url.includes('/bridge?target=')) {
-            const originalUrl = ep.url;
-            ep.url = `ws://${window.location.host}/bridge?target=${encodeURIComponent(originalUrl)}`;
-            console.log(`[NCC-SDK] 🧅 Auto-Bridged Onion: ${originalUrl}`);
+        const originalUrl = ep.url || ep.uri;
+        if (originalUrl) {
+            ep.url = bridgeOnion(originalUrl);
+            if (ep.url !== originalUrl) {
+                console.log(`[NCC-SDK] 🧅 Auto-Bridged Onion: ${originalUrl}`);
+            }
         }
         return ep;
     };
@@ -54,7 +63,8 @@ export function NCCProvider({ children }: { children: React.ReactNode }) {
       ncc02Resolver,
       pool
     };
-  }, []);
+  }, []); // Note: Still using [] because RelayManager is a singleton, 
+          // but in a full refactor bootstrap should be state-driven.
 
   return (
     <NCCContext.Provider value={value}>
