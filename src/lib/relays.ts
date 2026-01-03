@@ -16,13 +16,17 @@ export interface RelayHealth {
 export const RelayManager = {
   load(): string[] {
     const saved = localStorage.getItem('ncc_bootstrap_relays');
-    if (saved === null) return DEFAULT_RELAYS;
-    try {
-      const parsed = JSON.parse(saved);
-      return Array.isArray(parsed) ? (parsed.length > 0 ? parsed : DEFAULT_RELAYS) : DEFAULT_RELAYS;
-    } catch (e) {
-      return DEFAULT_RELAYS;
+    let relays = DEFAULT_RELAYS;
+    if (saved !== null) {
+        try {
+          const parsed = JSON.parse(saved);
+          relays = Array.isArray(parsed) ? (parsed.length > 0 ? parsed : DEFAULT_RELAYS) : DEFAULT_RELAYS;
+        } catch (e) {
+          relays = DEFAULT_RELAYS;
+        }
     }
+    console.log("[RelayManager] Loaded relays:", relays);
+    return relays;
   },
 
   save(relays: string[]) {

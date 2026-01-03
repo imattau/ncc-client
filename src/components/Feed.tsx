@@ -128,24 +128,26 @@ export function Feed({ relayUrl }: FeedProps) {
             console.warn("[Feed] Tor connection requested. Handshake may take up to 45 seconds.");
         }
 
-        console.log(`[Feed] Subscribing to ${relayUrl}...`);
+        const filter = [{ kinds: [1, 30051, 30053, 30058, 30059, 30060, 30061], limit: 50 }];
+        console.log(`[Feed] Subscribing to ${relayUrl} with filter:`, JSON.stringify(filter));
 
         sub = pool.current.subscribeMany(
           [relayUrl],
-          [{ kinds: [1, 30051, 30053, 30058, 30059, 30060, 30061], limit: 50 }] as any,
+          filter as any,
           {
             onevent(event) {
+              console.log(`[Feed] 📥 Event received from ${relayUrl}: Kind ${event.kind} id ${event.id.slice(0,8)}`);
               hasReceivedAnything = true;
               scheduleEventCommit(event);
               setStatus('connected');
             },
             oneose() {
+               console.log(`[Feed] 🔚 EOSE received from ${relayUrl}. Stored events sync complete.`);
                hasReceivedAnything = true;
-               console.log(`[Feed] EOSE received from ${relayUrl}.`);
                setStatus('connected');
             },
             onclose(reasons) {
-                console.error("[Feed] Subscription closed:", reasons);
+                console.error(`[Feed] ❌ Subscription closed for ${relayUrl}. Reasons:`, reasons);
                 if (!hasReceivedAnything) {
                     setStatus('error');
                     setErrorMsg(`Connection closed by relay or bridge.`);
@@ -154,14 +156,33 @@ export function Feed({ relayUrl }: FeedProps) {
           }
         );
 
+        // Connection Test Watchdog
         watchdog = setTimeout(() => {
             if (!hasReceivedAnything) {
-                console.error(`[Feed] Connection watchdog triggered after 30s`);
-                setStatus('error');
-                setErrorMsg("Relay did not respond. Tor might be slow or the relay is empty.");
+                console.warn(`[Feed] No events received from ${relayUrl} after 15s. Testing Kind 1 fallback...`);
+                // Close current sub and try a generic Kind 1 search to test connectivity
                 if (sub) sub.close();
+                sub = pool.current.subscribeMany(
+                    [relayUrl],
+                    [{ kinds: [1], limit: 10 }] as any,
+                    {
+                        onevent(ev) {
+                            console.log(`[Feed] ✅ Fallback Kind 1 received! Relay IS alive but maybe no NCC records found.`);
+                            hasReceivedAnything = true;
+                            scheduleEventCommit(ev);
+                            setStatus('connected');
+                        },
+                        oneose() {
+                            if (!hasReceivedAnything) {
+                                console.error(`[Feed] Fallback EOSE with ZERO events. Relay is likely empty or restricted.`);
+                                setStatus('error');
+                                setErrorMsg("Relay is reachable but returned zero events.");
+                            }
+                        }
+                    }
+                );
             }
-        }, 30000);
+        }, 15000);
     };
 
     start();
