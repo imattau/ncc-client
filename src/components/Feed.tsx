@@ -119,8 +119,13 @@ export function Feed({ relayUrl }: FeedProps) {
     let sub: any;
     let watchdog: any;
     let hasReceivedAnything = false;
+    let isMounted = true;
 
     const start = async () => {
+        // Subtle delay to ensure previous effect's cleanup has finished at the relay/pool level
+        await new Promise(resolve => setTimeout(resolve, 50));
+        if (!isMounted) return;
+
         setStatus('connecting');
         setErrorMsg(null);
 
@@ -129,54 +134,66 @@ export function Feed({ relayUrl }: FeedProps) {
         }
 
         const filter = [{ kinds: [1, 30051, 30053, 30058, 30059, 30060, 30061], limit: 50 }];
-        console.log(`[Feed] Subscribing to ${relayUrl} with filter:`, JSON.stringify(filter));
+        console.log(`[Feed] 🚀 Connecting to: ${relayUrl}`);
+        console.log(`[Feed] Filter:`, JSON.stringify(filter));
 
-        sub = pool.current.subscribeMany(
-          [relayUrl],
-          filter as any,
-          {
-            onevent(event) {
-              console.log(`[Feed] 📥 Event received from ${relayUrl}: Kind ${event.kind} id ${event.id.slice(0,8)}`);
-              hasReceivedAnything = true;
-              scheduleEventCommit(event);
-              setStatus('connected');
-            },
-            oneose() {
-               console.log(`[Feed] 🔚 EOSE received from ${relayUrl}. Stored events sync complete.`);
-               hasReceivedAnything = true;
-               setStatus('connected');
-            },
-            onclose(reasons) {
-                console.error(`[Feed] ❌ Subscription closed for ${relayUrl}. Reasons:`, reasons);
-                if (!hasReceivedAnything) {
-                    setStatus('error');
-                    setErrorMsg(`Connection closed by relay or bridge.`);
+        try {
+            sub = pool.current.subscribeMany(
+              [relayUrl],
+              filter as any,
+              {
+                onevent(event) {
+                  if (!isMounted) return;
+                  console.log(`[Feed] 📥 Event from ${relayUrl}: Kind ${event.kind} id ${event.id.slice(0,8)}`);
+                  hasReceivedAnything = true;
+                  scheduleEventCommit(event);
+                  setStatus('connected');
+                },
+                oneose() {
+                   if (!isMounted) return;
+                   console.log(`[Feed] 🔚 EOSE from ${relayUrl}.`);
+                   hasReceivedAnything = true;
+                   setStatus('connected');
+                },
+                onclose(reasons) {
+                    if (!isMounted) return;
+                    console.error(`[Feed] ❌ Connection closed for ${relayUrl}. Reasons:`, reasons);
+                    if (!hasReceivedAnything) {
+                        setStatus('error');
+                        setErrorMsg(`Connection closed by relay or bridge.`);
+                    }
                 }
-            }
-          }
-        );
+              }
+            );
+        } catch (e: any) {
+            console.error(`[Feed] 💥 Subscription error for ${relayUrl}:`, e);
+            setStatus('error');
+            setErrorMsg(e.message);
+        }
 
         // Connection Test Watchdog
         watchdog = setTimeout(() => {
+            if (!isMounted) return;
             if (!hasReceivedAnything) {
-                console.warn(`[Feed] No events received from ${relayUrl} after 15s. Testing Kind 1 fallback...`);
-                // Close current sub and try a generic Kind 1 search to test connectivity
+                console.warn(`[Feed] ⏳ Timeout for ${relayUrl}. Testing fallback...`);
                 if (sub) sub.close();
                 sub = pool.current.subscribeMany(
                     [relayUrl],
                     [{ kinds: [1], limit: 10 }] as any,
                     {
                         onevent(ev) {
-                            console.log(`[Feed] ✅ Fallback Kind 1 received! Relay IS alive but maybe no NCC records found.`);
+                            if (!isMounted) return;
+                            console.log(`[Feed] ✅ Fallback Kind 1 received from ${relayUrl}`);
                             hasReceivedAnything = true;
                             scheduleEventCommit(ev);
                             setStatus('connected');
                         },
                         oneose() {
+                            if (!isMounted) return;
                             if (!hasReceivedAnything) {
-                                console.error(`[Feed] Fallback EOSE with ZERO events. Relay is likely empty or restricted.`);
+                                console.error(`[Feed] 🚫 Fallback EOSE with ZERO events for ${relayUrl}`);
                                 setStatus('error');
-                                setErrorMsg("Relay is reachable but returned zero events.");
+                                setErrorMsg("Relay reachable but returned zero events.");
                             }
                         }
                     }
@@ -188,6 +205,8 @@ export function Feed({ relayUrl }: FeedProps) {
     start();
 
     return () => {
+      isMounted = false;
+      console.log(`[Feed] 🧹 Cleaning up connection to: ${relayUrl}`);
       if (watchdog) clearTimeout(watchdog);
       if (sub) sub.close();
     };

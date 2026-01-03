@@ -11,7 +11,7 @@ import { Globe, LogOut, Radio } from 'lucide-react';
 import clsx from 'clsx';
 
 import { useTracking } from './context/TrackingContext';
-import { useEffect } from 'react';
+import { useEffect, useCallback } from 'react';
 
 interface ActiveService {
   pubkey: string;
@@ -44,7 +44,7 @@ function Main() {
       return () => clearInterval(interval);
   }, []);
 
-  const handleConnect = (url: string, serviceInfo?: { pubkey: string, id: string }) => {
+  const handleConnect = useCallback((url: string, serviceInfo?: { pubkey: string, id: string }) => {
     setActiveRelay(url);
     localStorage.setItem('ncc_active_relay', url);
     if (serviceInfo) {
@@ -53,15 +53,15 @@ function Main() {
         localStorage.setItem('ncc_active_service', JSON.stringify(info));
     }
     setActiveTab('feed');
-  };
+  }, []);
 
-  const handleLogout = () => {
+  const handleLogout = useCallback(() => {
     logout();
     setActiveRelay(null);
     setCurrentService(null);
     localStorage.removeItem('ncc_active_relay');
     localStorage.removeItem('ncc_active_service');
-  };
+  }, [logout]);
 
   // Monitor for updates to the current active service
   useEffect(() => {

@@ -179,7 +179,7 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
     };
   }, [tracked.length, handleEvent, pool]); 
 
-  const trackService = (pubkey: string, serviceId: string) => {
+  const trackService = useCallback((pubkey: string, serviceId: string) => {
     setTracked(prev => {
       if (prev.some(t => t.pubkey === pubkey && t.serviceId === serviceId)) return prev;
       return [...prev, {
@@ -191,19 +191,19 @@ export function TrackingProvider({ children }: { children: ReactNode }) {
         lastChecked: Math.floor(Date.now() / 1000)
       }];
     });
-  };
+  }, []);
 
-  const untrackService = (pubkey: string, serviceId: string) => {
+  const untrackService = useCallback((pubkey: string, serviceId: string) => {
     setTracked(prev => prev.filter(t => !(t.pubkey === pubkey && t.serviceId === serviceId)));
-  };
+  }, []);
 
-  const isTracked = (pubkey: string, serviceId: string) => {
+  const isTracked = useCallback((pubkey: string, serviceId: string) => {
     return tracked.some(t => t.pubkey === pubkey && t.serviceId === serviceId);
-  };
+  }, [tracked]);
 
-  const findTracked = (pubkey: string, serviceId: string) => {
+  const findTracked = useCallback((pubkey: string, serviceId: string) => {
     return tracked.find(t => t.pubkey === pubkey && t.serviceId === serviceId);
-  };
+  }, [tracked]);
 
   return (
     <TrackingContext.Provider value={{ tracked, trackService, untrackService, isTracked, findTracked, syncToNostr, restoreFromNostr }}>
