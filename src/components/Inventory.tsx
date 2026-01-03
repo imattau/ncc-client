@@ -686,18 +686,24 @@ export function Inventory() {
                         const iden = identities.find(i => i.pubkey === rec.pubkey);
                         const label = iden ? iden.label : "Primary";
                         const d = rec.tags.find((t: any) => t[0] === 'd')?.[1] || 'none';
-                        const isExpired = rec.kind === 30059 && rec.tags.find((t: any) => t[0] === 'exp' && parseInt(t[1]) < Date.now() / 1000);
+                        const now = Date.now() / 1000;
+                        const isExpired = rec.kind === 30059 && rec.tags.find((t: any) => t[0] === 'exp' && parseInt(t[1]) < now);
                         const isPrivate = rec.kind === 30059 && parsePrivateFlag(rec.tags);
+                        const isRecentlyUpdated = (now - rec.created_at) < 120; // 2 minutes
 
                         return (
-                            <div key={rec.id} className={clsx("card bg-base-100 border shadow-sm", isExpired ? "border-error/30" : "border-base-200")}>
+                            <div key={rec.id} className={clsx(
+                                "card bg-base-100 border shadow-sm transition-all duration-500", 
+                                isExpired ? "border-error/30" : isRecentlyUpdated ? "border-success bg-success/5 shadow-md scale-[1.01]" : "border-base-200"
+                            )}>
                                 <div className="card-body p-4">
                                     <div className="flex items-start justify-between">
                                         <div className="flex flex-col gap-1 min-w-0">
                                             <div className="flex items-center gap-2">
-                                                <span className="badge badge-neutral badge-xs font-bold" dangerouslySetInnerHTML={{ __html: escapeHtml(label) }}></span>
-                                                <span className="text-sm font-black uppercase">Service: <span dangerouslySetInnerHTML={{ __html: escapeHtml(d) }}></span></span>
+                                                <span className="badge badge-neutral badge-xs font-bold">{label}</span>
+                                                <span className="text-sm font-black uppercase">Service: {d}</span>
                                                 {isPrivate && <Lock className="w-3 h-3 text-warning" />}
+                                                {isRecentlyUpdated && <div className="badge badge-success badge-xs animate-pulse font-bold">JUST UPDATED</div>}
                                                 {isExpired && <div className="badge badge-error badge-xs">EXPIRED</div>}
                                             </div>
                                             <div className="flex items-center gap-2">

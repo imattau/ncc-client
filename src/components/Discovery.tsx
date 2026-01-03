@@ -496,8 +496,13 @@ export function Discovery({ onConnect }: DiscoveryProps) {
                                               <div className="text-[9px] opacity-50 truncate">{npub}</div>
                                           </div>
                                       </div>
-                                      <div className="text-[9px] opacity-40 font-mono text-right sm:text-left">
-                                          Last Update: {lastUpdateStr}
+                                      <div className="flex flex-col items-end gap-1">
+                                          <div className="text-[9px] opacity-40 font-mono text-right sm:text-left">
+                                              Last Update: {lastUpdateStr}
+                                          </div>
+                                          {(Date.now() / 1000 - lastUpdate) < 300 && (
+                                              <div className="badge badge-success badge-xs font-bold animate-pulse">RECENTLY REFRESHED</div>
+                                          )}
                                       </div>
                                   </div>
                                   <div className="space-y-4">
