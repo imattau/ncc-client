@@ -1,7 +1,7 @@
 {
   "name": "ncc-client-poc",
   "description": "Proof of Concept client for Nostr Community Conventions (NCC). Implements decentralized infrastructure management and discovery without DNS.",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "type": "module",
   "main": "./dist/index.html",
   "files": [
